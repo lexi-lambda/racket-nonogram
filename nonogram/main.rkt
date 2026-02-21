@@ -85,8 +85,7 @@
 
   (new
    (class canvas%
-     (inherit get-dc
-              refresh)
+     (inherit get-dc)
 
      (define mouse-location #f)
      (define last-cursor-update #f)
@@ -147,6 +146,10 @@
           (draw-pict (cellophane (colorize (disk 10) "red") 0.5) dc (- x 5) (- y 5))]
          [_ (void)]))
 
+     (define/override (refresh)
+       (collect-garbage 'incremental)
+       (super refresh))
+
      (super-new
       [parent frame]
       [min-width 300]
@@ -158,4 +161,4 @@
 
 (module+ main
   (require (submod "core.rkt" example))
-  (run puzzle-s5-031))
+  (run puzzle-s5-061))

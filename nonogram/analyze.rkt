@@ -262,28 +262,39 @@
              (- (+ half-len i) wing-len)
              (+ (+ half-len i) wing-len)))])]))
 
-  (define (propagate-information-to-others clue-i)
+  (define (propagate-information-to-neighbors clue-i)
+    (define clue (array-ref clues clue-i))
     (define clue-range (array-ref clue-ranges clue-i))
 
-    ;; cross off tiles in other ranges that would overlap based on our filled tiles
-    (define first-full-i (find-first clue-range tile-full?))
-    (when first-full-i
-      (for/fold ([cross-after-i (sub1 first-full-i)])
-                ([clue-j (in-inclusive-range (sub1 clue-i) 0 -1)])
-        (define other-clue (array-ref clues clue-j))
-        (define other-clue-range (array-ref clue-ranges clue-j))
-        (vector-fill!/track other-clue-range 'cross (max 0 cross-after-i)
-                            #:contradiction-reason "not enough space between filled clue tiles")
-        (- cross-after-i other-clue 1))
+    ;; cross off tiles in previous clue’s range that would necessarily overlap with us
+    (unless (zero? clue-i)
+      (define first-full-i (find-first clue-range tile-full?))
+      (define last-hole-i (find-last clue-range tile-hole?))
+      (define last-tile-previous-clue-can-occupy
+        (min
+         ;; if we have a filled tile, then the previous clue must leave a gap before it
+         (if first-full-i (sub1 first-full-i) num-tiles)
+         ;; the latest our first filled tile can appear is determined by the last hole and our clue size
+         (if last-hole-i (- last-hole-i clue) num-tiles)))
+      (when (< last-tile-previous-clue-can-occupy num-tiles)
+        (define other-clue-range (array-ref clue-ranges (sub1 clue-i)))
+        (vector-fill!/track other-clue-range 'cross (max 0 last-tile-previous-clue-can-occupy)
+                            #:contradiction-reason "not enough space between neighboring clues’ full tiles")))
 
+    ;; cross off tiles in next clue’s range that would necessarily overlap with us
+    (when (< (add1 clue-i) num-clues)
       (define last-full-i (find-last clue-range tile-full?))
-      (for/fold ([cross-before-i (+ first-full-i 2)])
-                ([clue-j (in-range (add1 clue-i) num-clues)])
-        (define other-clue (array-ref clues clue-j))
-        (define other-clue-range (array-ref clue-ranges clue-j))
-        (vector-fill!/track other-clue-range 'cross 0 (min num-tiles cross-before-i)
-                            #:contradiction-reason "not enough space between filled clue tiles")
-        (+ cross-before-i other-clue 1))))
+      (define first-hole-i (find-first clue-range tile-hole?))
+      (define first-tile-next-clue-can-occupy
+        (max
+         ;; if we have a filled tile, then the next clue must leave a gap after it
+         (if last-full-i (+ last-full-i 2) 0)
+         ;; the earliest our last filled tile can appear is determined by the first hole and our clue size
+         (if first-hole-i (+ first-hole-i clue 1) 0)))
+      (when (> first-tile-next-clue-can-occupy 0)
+        (define other-clue-range (array-ref clue-ranges (add1 clue-i)))
+        (vector-fill!/track other-clue-range 'cross 0 (min num-tiles first-tile-next-clue-can-occupy)
+                            #:contradiction-reason "not enough space between neighboring clues’ full tiles"))))
 
   (define (propagate-information-from-user)
     ;; fill in tiles filled by the user that can only belong to one clue
@@ -300,7 +311,7 @@
     (let go-again ()
       (for ([i (in-range num-clues)])
         (gain-information-from-self i)
-        (propagate-information-to-others i))
+        (propagate-information-to-neighbors i))
       (propagate-information-from-user)
       (when gained-information?
         (set! gained-information? #f)
@@ -335,7 +346,9 @@
   (check-equal? (analyze-line '(1 1) #(full full  empty)) 'error)
   (check-equal? (analyze-line '(3) #(cross empty full)) 'error)
   (check-equal? (analyze-line '(3) #(cross empty empty)) 'error)
-  (check-equal? (analyze-line '(3 1) #(empty empty empty cross full cross empty)) '(pending done)))
+  (check-equal? (analyze-line '(3 1) #(empty empty empty cross full cross empty)) '(pending done))
+  (check-equal? (analyze-line '(1 1 1) #(cross cross full cross full cross empty cross cross)) '(done done pending))
+  (check-equal? (analyze-line '(1 1) #(cross cross full cross empty empty empty)) '(done pending)))
 
 ;; analyze-puzzle : puzzle? -> board-analysis?
 (define (analyze-puzzle pp)
