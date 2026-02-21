@@ -92,10 +92,10 @@
      (define last-cursor-update #f)
 
      (define wld (make-world initial-puzzle))
-     (define rendered #f)
+     (define puzzle-renderer #f)
 
      (define/override (on-event event)
-       (when rendered
+       (when puzzle-renderer
          (define event-type (send event get-event-type))
          (define location (point (send event get-x)
                                  (send event get-y)))
@@ -112,38 +112,36 @@
             (refresh)]
            [_ (void)])
 
-         (define w-to-c (world-to-child (rendered-puzzle-pict rendered)
-                                        (rendered-puzzle-board-pict rendered)))
-         (match-define (and tile-point (point tile-x tile-y))
-           (truncate-point
-            (tf* (tf:scale (/ 1 TILE-SIZE) (/ 1 TILE-SIZE))
-                 w-to-c
-                 location)))
-
-         (define board (puzzle-board (world-puzzle wld)))
-         (define in-bounds?
-           (and (>= tile-x 0) (< tile-x (board-width board))
-                (>= tile-y 0) (< tile-y (board-height board))))
-         (when (or in-bounds? (memq event-type '(left-up middle-up right-up)))
-           (define new-wld (on-mouse-event wld event-type tile-x tile-y))
+         (define tile-point (send puzzle-renderer get-tile-at location))
+         (when (or tile-point (memq event-type '(left-up middle-up right-up)))
+           (define new-wld (on-mouse-event wld
+                                           event-type
+                                           (and~> tile-point point-x)
+                                           (and~> tile-point point-y)))
            (unless (equal? wld new-wld)
              (set! wld new-wld)
-             (rerender-puzzle)
              (refresh)))))
 
-     (define/private (rerender-puzzle)
-       (define rp (render-puzzle (world-puzzle wld)
-                                 (world-board-analysis wld)))
-       (set! rendered
-             (struct-copy rendered-puzzle rp
-                          [pict (freeze (set-smoothing (scale (inset (rendered-puzzle-pict rp) 5) 2))
-                                        #:scale (send (get-dc) get-backing-scale))])))
+     (define/private (update-renderer!)
+       (define backing-scale (send (get-dc) get-backing-scale))
+       (cond
+         [(or (not puzzle-renderer)
+              (not (= backing-scale (send puzzle-renderer get-backing-scale))))
+          (set! puzzle-renderer
+                (new puzzle-renderer%
+                     [puzzle (world-puzzle wld)]
+                     [board-analysis (world-board-analysis wld)]
+                     [output-scale 2.0]
+                     [backing-scale backing-scale]))]
+         [else
+          (send puzzle-renderer update!
+                (world-puzzle wld)
+                (world-board-analysis wld))]))
 
      (define/private (paint dc)
+       (update-renderer!)
        (send dc set-smoothing 'smoothed)
-       (unless rendered
-         (rerender-puzzle))
-       (draw-pict (rendered-puzzle-pict rendered) dc 0 0)
+       (draw-pict (send puzzle-renderer get-render) dc 0 0)
        (match mouse-location
          [(point x y)
           (draw-pict (cellophane (colorize (disk 10) "red") 0.5) dc (- x 5) (- y 5))]

@@ -19,7 +19,7 @@
                                   [yy real?]
                                   [y0 real?]))
           [tf:translate (-> real? real? transformation?)]
-          [tf:scale (-> real? real? transformation?)]
+          [tf:scale (->* [real?] [real?] transformation?)]
           [world-to-child (-> pict? pict? transformation?)]))
 
 ;; -----------------------------------------------------------------------------
@@ -49,7 +49,7 @@
   (transformation 1.0 0.0 dx
                   0.0 1.0 dy))
 
-(define (tf:scale sx sy)
+(define (tf:scale sx [sy sx])
   (transformation sx 0.0 0.0
                   0.0 sy 0.0))
 
