@@ -187,5 +187,5 @@
   (define log-writer
     (spawn-pretty-log-writer
      (make-nonogram-log-receiver #:timing? #f)))
-  (run puzzle-s5-137)
+  (run puzzle-s5-135)
   (close-log-writer log-writer))
