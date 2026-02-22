@@ -15,22 +15,24 @@
 (provide (contract-out
           [axis? flat-contract?]
           [tile? flat-contract?]
+          [tile-line? flat-contract?]
 
-          (struct board ([rows (arrayof (arrayof tile?))]))
+          (struct board ([rows (arrayof tile-line?)]))
           [make-board (-> natural? natural? board?)]
           [board-width (-> board? natural?)]
           [board-height (-> board? natural?)]
           [board-ref (-> board? natural? natural? tile?)]
           [board-set (-> board? natural? natural? tile? board?)]
           [board-row (-> board? natural? (arrayof tile?))]
-          [board-column (-> board? natural? (arrayof tile?))]
+          [board-column (-> board? natural? tile-line?)]
+          [board-line (-> board? axis? natural? tile-line?)]
 
           [clue? flat-contract?]
           [line-clues? flat-contract?]
           [axis-clues? flat-contract?]
           (struct board-clues ([row-clues axis-clues?]
                                [column-clues axis-clues?]))
-          [board-clues-ref (-> board-clues? axis? natural? axis-clues?)]
+          [board-clues-line (-> board-clues? axis? natural? line-clues?)]
 
           (struct puzzle ([board board?]
                           [clues board-clues?]))
@@ -40,6 +42,9 @@
 
 (define axis? (or/c 'row 'column))
 (define tile? (or/c 'empty 'full 'cross 'mark))
+
+;; A *tile line* is a row or a column of tiles.
+(define tile-line? (arrayof tile?))
 
 ;; -----------------------------------------------------------------------------
 ;; board
@@ -103,16 +108,22 @@
                          #(full  full  full)
                          #(empty full  full)))))
 
-;; board-row : board? natural? -> (arrayof tile?)
+;; board-row : board? natural? -> tile-line?
 (define (board-row b y)
   (array-ref (board-rows b) y))
 
-;; board-column : board? natural? -> (arrayof tile?)
+;; board-column : board? natural? -> tile-line?
 (define (board-column b x)
   (define height (board-height b))
   (for/array #:length height
              ([y (in-range height)])
     (board-ref b x y)))
+
+;; board-line : board? axis? natural? -> tile-line?
+(define (board-line b axis i)
+  (match axis
+    ['row (board-row b i)]
+    ['column (board-column b i)]))
 
 ;; -----------------------------------------------------------------------------
 ;; clues
@@ -136,19 +147,19 @@
      #((1) (3))
      #(() (1) (2) (1)))))
 
-;; clues-ref : clues? axis? natural? -> line-clues?
-(define (board-clues-ref clues axis i)
+;; board-clues-line : clues? axis? natural? -> line-clues?
+(define (board-clues-line clues axis i)
   (match axis
     ['row    (array-ref (board-clues-row-clues clues) i)]
     ['column (array-ref (board-clues-column-clues clues) i)]))
 
 (module+ test
-  (check-equal? (board-clues-ref clues-1 'row 0) '(1))
-  (check-equal? (board-clues-ref clues-1 'row 1) '(1 1))
-  (check-equal? (board-clues-ref clues-1 'row 2) '(2))
-  (check-equal? (board-clues-ref clues-1 'column 0) '(1))
-  (check-equal? (board-clues-ref clues-1 'column 1) '(1))
-  (check-equal? (board-clues-ref clues-1 'column 2) '(3)))
+  (check-equal? (board-clues-line clues-1 'row 0) '(1))
+  (check-equal? (board-clues-line clues-1 'row 1) '(1 1))
+  (check-equal? (board-clues-line clues-1 'row 2) '(2))
+  (check-equal? (board-clues-line clues-1 'column 0) '(1))
+  (check-equal? (board-clues-line clues-1 'column 1) '(1))
+  (check-equal? (board-clues-line clues-1 'column 2) '(3)))
 
 ;; -----------------------------------------------------------------------------
 ;; puzzle

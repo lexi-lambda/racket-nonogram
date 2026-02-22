@@ -8,10 +8,12 @@
          racket/match
          racket/math
          threading
+         toolbox/who
          "analyze.rkt"
          "array.rkt"
          "core.rkt"
-         "geometry.rkt")
+         "geometry.rkt"
+         "logger.rkt")
 
 (provide TILE-SIZE
          (contract-out
@@ -36,23 +38,56 @@
   (* pi 2 x))
 
 (define (line dx dy)
-  (dc (λ (dc x y) (send dc draw-line x y (+ x dx) (+ y dy)))
-      dx
-      dy))
+  (unsafe-dc (λ (dc x y) (send dc draw-line x y (+ x dx) (+ y dy)))
+             dx
+             dy))
 
 (define (set-smoothing p [smoothing 'smoothed])
   (define draw-p (make-pict-drawer p))
   (struct-copy
-   pict (dc (λ (dc x y)
-              (define old-smoothing (send dc get-smoothing))
-              (send dc set-smoothing smoothing)
-              (draw-p dc x y)
-              (send dc set-smoothing old-smoothing))
-            (pict-width p)
-            (pict-height p)
-            (pict-ascent p)
-            (pict-descent p))
+   pict (unsafe-dc
+         (λ (dc x y)
+           (define old-smoothing (send dc get-smoothing))
+           (send dc set-smoothing smoothing)
+           (draw-p dc x y)
+           (send dc set-smoothing old-smoothing))
+         (pict-width p)
+         (pict-height p)
+         (pict-ascent p)
+         (pict-descent p))
    [children (list (child p 0 0 1 1 0 0))]))
+
+(define/who (freeze-to p bm-box
+                       #:scale [scale 1.0]
+                       #:allow-size-change? [allow-size-change? #f])
+  (define bm-width (max 1 (inexact->exact (ceiling (pict-width p)))))
+  (define bm-height (max 1 (inexact->exact (ceiling (pict-height p)))))
+
+  (define (install-new-bitmap!)
+    (define bm (make-bitmap bm-width bm-height #:backing-scale scale))
+    (set-box! bm-box bm)
+    bm)
+
+  (define bm
+    (match (unbox bm-box)
+      [#f (install-new-bitmap!)]
+      [bm
+       (cond
+         [(and (= (send bm get-width) bm-width)
+               (= (send bm get-height) bm-height)
+               (= (send bm get-backing-scale) scale))
+          bm]
+         [allow-size-change?
+          (install-new-bitmap!)]
+         [else
+          (raise-arguments-error who "pict to freeze has different size from previously-frozen pict")])]))
+
+  (define dc (new bitmap-dc% [bitmap bm]))
+  (send dc clear)
+  (send dc set-smoothing 'smoothed)
+  (draw-pict p dc 0 0)
+  (struct-copy pict (bitmap bm)
+               [children (list (child p 0 0 1 1 0 0))]))
 
 ;; -----------------------------------------------------------------------------
 
@@ -87,6 +122,9 @@
     (define/public (freeze* p)
       (~> (set-smoothing p)
           (freeze #:scale backing-scale)))
+
+    (define/public (freeze-to* p bm-box)
+      (freeze-to p bm-box #:scale backing-scale))
 
     (define/public (freeze/dc proc #:width width #:height height)
       (define bm (make-bitmap (max 1 (inexact->exact (ceiling width)))
@@ -157,6 +195,7 @@
     (define draw-mark (make-pict-drawer (tile-symbol (mark-symbol))))
 
     (define/private (draw-background dc board)
+      (define end-timing (timing-start 'draw-background))
       (define old-transform (send dc get-transformation))
       (send dc translate (/ GRID-BORDER-WIDTH 2) (/ GRID-BORDER-WIDTH 2))
 
@@ -181,7 +220,8 @@
              ['cross (draw-cross dc x y)]
              ['mark  (draw-mark dc x y)])]))
 
-      (send dc set-transformation old-transform))
+      (send dc set-transformation old-transform)
+      (end-timing))
 
     ;; -------------------------------------------------------------------------
 
@@ -226,18 +266,19 @@
       (send dc translate x y)
 
       (draw-background dc board)
+      (define end-timing (timing-start 'draw-major-grid-lines))
       (draw-major-grid-lines dc 0 0)
+      (end-timing)
 
       (send dc set-transformation old-transform)
       (send dc set-smoothing old-smoothing)
       (send dc set-brush old-brush)
       (send dc set-pen old-pen))
 
-    (define/public (render board)
-      (~> (dc (λ (dc x y) (draw dc board x y))
-              outer-w
-              outer-h)
-          freeze*))))
+    (define/public (get-pict board)
+      (unsafe-dc (λ (dc x y) (draw dc board x y))
+                 outer-w
+                 outer-h))))
 
 ;; -----------------------------------------------------------------------------
 
@@ -250,7 +291,7 @@
     (define specified-backing-scale backing-scale)
     (define total-scale (* output-scale backing-scale))
 
-    (inherit freeze*)
+    (inherit freeze-to*)
     (super-new [backing-scale total-scale])
 
     (define board-w (board-width (puzzle-board puzzle)))
@@ -261,12 +302,14 @@
            [board-height board-h]
            [backing-scale total-scale]))
 
-    (define rendered-board #f)
+    (define board-pict #f)
+    (define rendered-puzzle-bm-box (box #f))
     (define rendered-puzzle #f)
 
     (define/private (render!)
-      (set! rendered-board
-            (send board-renderer render (puzzle-board puzzle)))
+      (define timing-end (timing-start 'render!))
+      (set! board-pict
+            (send board-renderer get-pict (puzzle-board puzzle)))
 
       (define clues (puzzle-clues puzzle))
       (set! rendered-puzzle
@@ -278,9 +321,10 @@
                   (render-axis-clues 'column
                                      (board-clues-column-clues clues)
                                      (board-analysis-column-analysis board-analysis))
-                  rendered-board))
-                freeze*
-                (scale output-scale))))
+                  board-pict))
+                (freeze-to* rendered-puzzle-bm-box)
+                (scale output-scale)))
+      (timing-end))
 
     (define/public (get-backing-scale)
       specified-backing-scale)
@@ -300,7 +344,7 @@
     (define/public (get-tile-at mouse-location)
       (get-render) ;; render if needed
 
-      (define w-to-c (world-to-child rendered-puzzle rendered-board))
+      (define w-to-c (world-to-child rendered-puzzle board-pict))
       (match-define (and tile-location (point tile-x tile-y))
         (truncate-point
          (tf* (tf:scale (/ 1 TILE-SIZE))
@@ -347,6 +391,7 @@
     (for/list ([clue-line (in-array axis-clues)]
                [line-analysis (in-array axis-analysis)])
       (render-line-clues axis clue-line line-analysis)))
-  (match axis
-    ['row    (apply vr-append line-picts)]
-    ['column (apply hb-append line-picts)]))
+  (~> (match axis
+        ['row    (apply vr-append line-picts)]
+        ['column (apply hb-append line-picts)])
+      (time-pict 'render-axis-clues)))

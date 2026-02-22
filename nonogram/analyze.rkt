@@ -5,6 +5,7 @@
          racket/match
          "array.rkt"
          "core.rkt"
+         "geometry.rkt"
          "vector.rkt")
 
 (module+ test
@@ -18,8 +19,9 @@
           (struct board-analysis ([row-analysis axis-clue-analysis?]
                                   [column-analysis axis-clue-analysis?]))
 
-          [analyze-line (-> line-clues? (arrayof tile?) line-clue-analysis?)]
-          [analyze-puzzle (-> puzzle? board-analysis?)]))
+          [analyze-line (-> line-clues? tile-line? line-clue-analysis?)]
+          [analyze-puzzle (-> puzzle? board-analysis?)]
+          [reanalyze-lines-at (-> puzzle? board-analysis? integer-point? board-analysis?)]))
 
 ;; -----------------------------------------------------------------------------
 
@@ -37,7 +39,7 @@
           (format "analyze-puzzle: contradiction in puzzle\n  reason: ~a" why)
           (current-continuation-marks))))
 
-;; analyze-line/simple : line-clues? (arrayof tile?) -> (or/c 'done 'error #f)
+;; analyze-line/simple : line-clues? tile-line? -> (or/c 'done 'error #f)
 (define (analyze-line/simple clues tiles)
   (define num-tiles (array-length tiles))
   (let loop ([clues clues]
@@ -68,7 +70,7 @@
   (check-equal? (analyze-line/simple '(1 1) #(full empty full)) 'done)
   (check-equal? (analyze-line/simple '(1) #(full empty full)) 'error))
 
-;; analyze-line/fancy : line-clues? (arrayof tile?) -> line-clue-analysis?
+;; analyze-line/fancy : line-clues? tile-line? -> line-clue-analysis?
 (define (analyze-line/fancy clues-lst user-tiles)
   (define num-tiles (array-length user-tiles))
 
@@ -341,7 +343,7 @@
              'pending)]
         [else 'pending]))))
 
-;; analyze-line : line-clues? (arrayof tile?) -> line-clue-analysis?
+;; analyze-line : line-clues? tile-line? -> line-clue-analysis?
 (define (analyze-line line-clues tiles)
   (or (analyze-line/simple line-clues tiles)
       (analyze-line/fancy line-clues tiles)))
@@ -356,17 +358,27 @@
   (check-equal? (analyze-line '(1 1) #(cross cross full cross empty empty empty)) '(done pending))
   (check-equal? (analyze-line '(1 3 2) #(empty cross full full full cross empty empty empty cross full empty)) '(pending done pending)))
 
+;; analyze-line-at : puzzle? axis? natural? -> line-analysis?
+(define (analyze-line-at pz axis i)
+  (analyze-line (board-clues-line (puzzle-clues pz) axis i)
+                (board-line (puzzle-board pz) axis i)))
+
+;; analyze-lines-at : puzzle? integer-point? -> (values line-analysis? line-analysis?)
+(define (analyze-lines-at pz location)
+  (match-define (point x y) location)
+  (values (analyze-line-at pz 'row y)
+          (analyze-line-at pz 'column x)))
+
 ;; analyze-puzzle : puzzle? -> board-analysis?
 (define (analyze-puzzle pp)
   (define board (puzzle-board pp))
-  (define clues (puzzle-clues pp))
   (board-analysis
    (for/array #:length (board-height board)
-              ([(line-clues i) (in-indexed (in-array (board-clues-row-clues clues)))])
-     (analyze-line line-clues (board-row board i)))
+              ([i (in-range (board-height board))])
+     (analyze-line-at pp 'row i))
    (for/array #:length (board-width board)
-             ([(line-clues i) (in-indexed (in-array (board-clues-column-clues clues)))])
-     (analyze-line line-clues (board-column board i)))))
+             ([i (in-range (board-width board))])
+     (analyze-line-at pp 'column i))))
 
 (module+ test
   (check-equal? (analyze-puzzle
@@ -377,3 +389,12 @@
                 (board-analysis
                  #((pending) (done pending) (pending))
                  #(done (pending) error))))
+
+;; reanalyze-lines-at : puzzle? board-analysis? integer-point? -> board-analysis?
+(define (reanalyze-lines-at new-pz old-board-analysis location)
+  (define old-row-analyses (board-analysis-row-analysis old-board-analysis))
+  (define old-column-analyses (board-analysis-column-analysis old-board-analysis))
+  (define-values [new-row-analysis new-column-analysis] (analyze-lines-at new-pz location))
+  (board-analysis
+   (array-set old-row-analyses (point-y location) new-row-analysis)
+   (array-set old-column-analyses (point-x location) new-column-analysis)))

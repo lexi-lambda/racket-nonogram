@@ -6,9 +6,12 @@
          racket/gui/base
          racket/match
          threading
+         toolbox/format
+         toolbox/logging
          "analyze.rkt"
          "core.rkt"
          "geometry.rkt"
+         "logger.rkt"
          "render.rkt")
 
 ;; -----------------------------------------------------------------------------
@@ -39,8 +42,9 @@
       [{_       _                } old-tile]))
   (board-set old-board tile-x tile-y new-tile))
 
-;; world? mouse-event-type? natural? natural? -> world?
+;; world? mouse-event-type? (or/c natural? #f) (or/c natural? #f) -> world?
 (define (on-mouse-event wld1 event-type tile-x tile-y)
+  (define timing-end (timing-start 'on-mouse-event))
   ;; process drag mode changes
   (define wld2
     (match event-type
@@ -73,92 +77,115 @@
         wld2]
        [else
         (define new-puzzle (struct-copy puzzle old-puzzle [board new-board]))
+        (define new-board-analysis
+          (reanalyze-lines-at new-puzzle (world-board-analysis wld2) (point tile-x tile-y)))
+        (timing-end)
         (struct-copy world wld2
                      [puzzle new-puzzle]
-                     [board-analysis (analyze-puzzle new-puzzle)])])]
+                     [board-analysis new-board-analysis])])]
     [_ wld2]))
 
 ;; -----------------------------------------------------------------------------
 
 (define (run initial-puzzle)
-  (define frame (new frame% [label "Pictcross"]))
+  (define frame
+    (new
+     (class frame%
+       (super-new [label "Pictcross"])
+       (define/augment (on-close)
+         (send refresh-timer stop)))))
 
-  (new
-   (class canvas%
-     (inherit get-dc)
+  (define canvas
+    (new
+     (class canvas%
+       (inherit get-dc
+                refresh
+                refresh-now)
 
-     (define mouse-location #f)
-     (define last-cursor-update #f)
+       (define needs-refresh? #t)
+       (define mouse-location #f)
 
-     (define wld (make-world initial-puzzle))
-     (define puzzle-renderer #f)
+       (define wld (make-world initial-puzzle))
+       (define puzzle-renderer #f)
 
-     (define/override (on-event event)
-       (when puzzle-renderer
-         (define event-type (send event get-event-type))
-         (define location (point (send event get-x)
-                                 (send event get-y)))
-         (match event-type
-           ['motion
-            (set! mouse-location location)
-            (when (or (not last-cursor-update)
-                      (>= (- (current-inexact-monotonic-milliseconds) last-cursor-update)
-                          (/ 1000 60)))
-              (set! last-cursor-update (current-inexact-monotonic-milliseconds))
-              (refresh))]
-           ['leave
-            (set! mouse-location #f)
-            (refresh)]
-           [_ (void)])
+       (define/override (on-event event)
+         (when puzzle-renderer
+           (define event-type (send event get-event-type))
+           (define location (point (send event get-x)
+                                   (send event get-y)))
+           (match event-type
+             ['motion
+              (set! mouse-location location)
+              (set! needs-refresh? #t)]
+             ['leave
+              (set! mouse-location #f)
+              (set! needs-refresh? #t)]
+             [_ (void)])
 
-         (define tile-point (send puzzle-renderer get-tile-at location))
-         (when (or tile-point (memq event-type '(left-up middle-up right-up)))
-           (define new-wld (on-mouse-event wld
-                                           event-type
-                                           (and~> tile-point point-x)
-                                           (and~> tile-point point-y)))
-           (unless (equal? wld new-wld)
-             (set! wld new-wld)
-             (refresh)))))
+           (define tile-point (send puzzle-renderer get-tile-at location))
+           (when (or tile-point (memq event-type '(left-up middle-up right-up)))
+             (define new-wld (on-mouse-event wld
+                                             event-type
+                                             (and~> tile-point point-x)
+                                             (and~> tile-point point-y)))
+             (unless (equal? wld new-wld)
+               (set! wld new-wld)
+               (set! needs-refresh? #t)))))
 
-     (define/private (update-renderer!)
-       (define backing-scale (send (get-dc) get-backing-scale))
-       (cond
-         [(or (not puzzle-renderer)
-              (not (= backing-scale (send puzzle-renderer get-backing-scale))))
-          (set! puzzle-renderer
-                (new puzzle-renderer%
-                     [puzzle (world-puzzle wld)]
-                     [board-analysis (world-board-analysis wld)]
-                     [output-scale 2.0]
-                     [backing-scale backing-scale]))]
-         [else
-          (send puzzle-renderer update!
-                (world-puzzle wld)
-                (world-board-analysis wld))]))
+       (define/private (update-renderer!)
+         (define backing-scale (send (get-dc) get-backing-scale))
+         (cond
+           [(or (not puzzle-renderer)
+                (not (= backing-scale (send puzzle-renderer get-backing-scale))))
+            (set! puzzle-renderer
+                  (new puzzle-renderer%
+                       [puzzle (world-puzzle wld)]
+                       [board-analysis (world-board-analysis wld)]
+                       [output-scale 2.0]
+                       [backing-scale backing-scale]))]
+           [else
+            (send puzzle-renderer update!
+                  (world-puzzle wld)
+                  (world-board-analysis wld))]))
 
-     (define/private (paint dc)
-       (update-renderer!)
-       (send dc set-smoothing 'smoothed)
-       (draw-pict (send puzzle-renderer get-render) dc 0 0)
-       (match mouse-location
-         [(point x y)
-          (draw-pict (cellophane (colorize (disk 10) "red") 0.5) dc (- x 5) (- y 5))]
-         [_ (void)]))
+       (define/private (paint dc)
+         (update-renderer!)
+         (send dc set-smoothing 'smoothed)
+         (define rendered-p (send puzzle-renderer get-render))
+         (define timing-end (timing-start 'blit))
+         (draw-pict rendered-p dc 0 0)
+         (timing-end)
+         (match mouse-location
+           [(point x y)
+            (draw-pict (cellophane (colorize (disk 10) "red") 0.5) dc (- x 5) (- y 5))]
+           [_ (void)]))
 
-     (define/override (refresh)
-       (collect-garbage 'incremental)
-       (super refresh))
+       (define/public (do-refresh)
+         (collect-garbage 'incremental)
+         (when needs-refresh?
+           (set! needs-refresh? #f)
+           (refresh-now (λ (dc) (paint dc)))))
 
-     (super-new
-      [parent frame]
-      [min-width 300]
-      [min-height 300]
-      [paint-callback
-       (λ (canvas dc) (paint dc))])))
+       (super-new
+        [parent frame]
+        [min-width 300]
+        [min-height 300]
+        [paint-callback
+         (λ (canvas dc) (paint dc))]))))
 
-  (send frame show #t))
+  (define refresh-timer
+    (new timer%
+         [interval (floor (/ 1000 60))]
+         [notify-callback (λ () (send canvas do-refresh))]))
+
+  (send frame show #t)
+  (yield 'wait)
+  (void))
 
 (module+ main
   (require (submod "core.rkt" example))
-  (run puzzle-s5-137))
+  (define log-writer
+    (spawn-pretty-log-writer
+     (make-nonogram-log-receiver #:timing? #f)))
+  (run puzzle-s5-137)
+  (close-log-writer log-writer))
