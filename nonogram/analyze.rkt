@@ -177,11 +177,15 @@
          [#f first-i]
          [_  #f])]))
 
-  ;; Returns the index of the next clue, starting with index `clue-i`, for which
-  ;; the tile at index `tile-i` is 'empty in its clue range.
-  (define (find-next-clue-with-hole-at clue-i tile-i)
-    (for/first ([(clue-range i) (in-indexed (in-vector clue-ranges clue-i))]
-                #:when (tile-hole? (vector-ref clue-range tile-i)))
+  ;; Returns the index of the next clue of length `at-least-len`, starting with
+  ;; index `clue-i`, for which the tile at index `tile-i` is 'empty in its clue
+  ;; range.
+  (define (find-next-clue-with-hole-at clue-i tile-i #:at-least-length at-least-len)
+    (for/first ([clue (in-vector clues clue-i)]
+                [clue-range (in-vector clue-ranges clue-i)]
+                [i (in-naturals)]
+                #:when (and (>= clue at-least-len)
+                            (tile-hole? (vector-ref clue-range tile-i))))
       (+ clue-i i)))
 
   (define (bounded-before? tiles i)
@@ -300,9 +304,10 @@
     ;; fill in tiles filled by the user that can only belong to one clue
     (for ([(tile tile-i) (in-indexed (in-array user-tiles))]
           #:when (eq? tile 'full))
-      (define first-empty-clue-i (find-next-clue-with-hole-at 0 tile-i))
+      (define len (span-length user-tiles tile-i tile-full?))
+      (define first-empty-clue-i (find-next-clue-with-hole-at 0 tile-i #:at-least-length len))
       (if first-empty-clue-i
-          (unless (find-next-clue-with-hole-at (add1 first-empty-clue-i) tile-i)
+          (unless (find-next-clue-with-hole-at (add1 first-empty-clue-i) tile-i #:at-least-length len)
             ;; only one clue range with a hole at this location
             (vector-set!/track (array-ref clue-ranges first-empty-clue-i) tile-i 'full))
           (raise-contradiction "tile filled by user cannot belong to any clues"))))
@@ -348,7 +353,8 @@
   (check-equal? (analyze-line '(3) #(cross empty empty)) 'error)
   (check-equal? (analyze-line '(3 1) #(empty empty empty cross full cross empty)) '(pending done))
   (check-equal? (analyze-line '(1 1 1) #(cross cross full cross full cross empty cross cross)) '(done done pending))
-  (check-equal? (analyze-line '(1 1) #(cross cross full cross empty empty empty)) '(done pending)))
+  (check-equal? (analyze-line '(1 1) #(cross cross full cross empty empty empty)) '(done pending))
+  (check-equal? (analyze-line '(1 3 2) #(empty cross full full full cross empty empty empty cross full empty)) '(pending done pending)))
 
 ;; analyze-puzzle : puzzle? -> board-analysis?
 (define (analyze-puzzle pp)

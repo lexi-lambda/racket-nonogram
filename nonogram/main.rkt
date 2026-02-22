@@ -161,4 +161,4 @@
 
 (module+ main
   (require (submod "core.rkt" example))
-  (run puzzle-s5-061))
+  (run puzzle-s5-137))
