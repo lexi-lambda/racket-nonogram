@@ -12,6 +12,7 @@
     "gui-lib"
     "pict-lib"
     "threading-lib"
-    "toolbox-lib"))
+    "toolbox-lib"
+    "toolbox-draw-lib"))
 (define build-deps
   '("rackunit-lib"))

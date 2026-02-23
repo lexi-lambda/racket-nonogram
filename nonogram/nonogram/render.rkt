@@ -20,15 +20,18 @@
           [line (-> real? real? pict?)]
           [set-smoothing (->* [pict?] [(or/c 'unsmoothed 'smoothed 'aligned)] pict?)]
 
+          [get-base-puzzle-size (-> puzzle? size?)]
           [puzzle-renderer%
            (class/c
             (init-field [puzzle puzzle?]
-                        [board-analysis board-analysis?]
+                        [board-analysis (or/c board-analysis? #f)]
+                        [output-scale real?]
                         [backing-scale real?])
 
+            [get-output-scale (->m real?)]
             [get-backing-scale (->m real?)]
 
-            [update! (->m puzzle? board-analysis? void?)]
+            [update! (->m puzzle? (or/c board-analysis? #f) void?)]
             [get-render (->m pict?)]
             [get-tile-at (->m point? (or/c integer-point? #f))])]))
 
@@ -57,14 +60,15 @@
          (pict-descent p))
    [children (list (child p 0 0 1 1 0 0))]))
 
-(define/who (freeze-to p bm-box
-                       #:scale [scale 1.0]
+(define/who (freeze-to p0 bm-box
+                       #:scale [backing-scale 1.0]
                        #:allow-size-change? [allow-size-change? #f])
+  (define p (scale p0 backing-scale))
   (define bm-width (max 1 (inexact->exact (ceiling (pict-width p)))))
   (define bm-height (max 1 (inexact->exact (ceiling (pict-height p)))))
 
   (define (install-new-bitmap!)
-    (define bm (make-bitmap bm-width bm-height #:backing-scale scale))
+    (define bm (make-bitmap bm-width bm-height))
     (set-box! bm-box bm)
     bm)
 
@@ -74,8 +78,7 @@
       [bm
        (cond
          [(and (= (send bm get-width) bm-width)
-               (= (send bm get-height) bm-height)
-               (= (send bm get-backing-scale) scale))
+               (= (send bm get-height) bm-height))
           bm]
          [allow-size-change?
           (install-new-bitmap!)]
@@ -86,8 +89,8 @@
   (send dc clear)
   (send dc set-smoothing 'smoothed)
   (draw-pict p dc 0 0)
-  (struct-copy pict (bitmap bm)
-               [children (list (child p 0 0 1 1 0 0))]))
+  (struct-copy pict (scale (bitmap bm) (/ backing-scale))
+               [children (list (child p0 0 0 1 1 0 0))]))
 
 ;; -----------------------------------------------------------------------------
 
@@ -127,13 +130,13 @@
       (freeze-to p bm-box #:scale backing-scale))
 
     (define/public (freeze/dc proc #:width width #:height height)
-      (define bm (make-bitmap (max 1 (inexact->exact (ceiling width)))
-                              (max 1 (inexact->exact (ceiling height)))
-                              #:backing-scale backing-scale))
+      (define bm (make-bitmap (max 1 (inexact->exact (ceiling (* width backing-scale))))
+                              (max 1 (inexact->exact (ceiling (* height backing-scale))))))
       (define dc (make-object bitmap-dc% bm))
       (send dc set-smoothing 'smoothed)
+      (send dc scale backing-scale backing-scale)
       (proc dc)
-      (bitmap bm))
+      (scale (bitmap bm) (/ backing-scale)))
 
     (super-new)))
 
@@ -285,9 +288,9 @@
 (define puzzle-renderer%
   (class renderer%
     (init-field puzzle
-                output-scale
-                board-analysis)
-    (init backing-scale)
+                [output-scale 1.0]
+                [board-analysis #f])
+    (init [backing-scale 1.0])
     (define specified-backing-scale backing-scale)
     (define total-scale (* output-scale backing-scale))
 
@@ -316,16 +319,19 @@
             (~> (hb-append
                  (render-axis-clues 'row
                                     (board-clues-row-clues clues)
-                                    (board-analysis-row-analysis board-analysis))
+                                    (and~> board-analysis board-analysis-row-analysis))
                  (vr-append
                   (render-axis-clues 'column
                                      (board-clues-column-clues clues)
-                                     (board-analysis-column-analysis board-analysis))
+                                     (and~> board-analysis board-analysis-column-analysis))
                   board-pict))
                 (freeze-to* rendered-puzzle-bm-box)
+                (inset 5)
                 (scale output-scale)))
       (timing-end))
 
+    (define/public (get-output-scale)
+      output-scale)
     (define/public (get-backing-scale)
       specified-backing-scale)
 
@@ -341,10 +347,13 @@
         (render!))
       rendered-puzzle)
 
+    (define/public (get-size)
+      (pict-size (get-render)))
+
     (define/public (get-tile-at mouse-location)
       (get-render) ;; render if needed
 
-      (define w-to-c (world-to-child rendered-puzzle board-pict))
+      (define w-to-c (tf:world-to-child rendered-puzzle board-pict))
       (match-define (and tile-location (point tile-x tile-y))
         (truncate-point
          (tf* (tf:scale (/ 1 TILE-SIZE))
@@ -358,6 +367,9 @@
 
       (and in-bounds? tile-location))))
 
+(define (get-base-puzzle-size pz)
+  (send (new puzzle-renderer% [puzzle pz]) get-size))
+
 ;; -----------------------------------------------------------------------------
 
 ;; render-clue : clue? (or/c clue-analysis? 'error) -> pict?
@@ -368,13 +380,14 @@
     ['done (colorize p CLUE-DONE-COLOR)]
     ['error (colorize p CLUE-ERROR-COLOR)]))
 
-;; render-clue : axis? clue-line? clue-line-analysis? -> pict?
+;; render-clue : axis? clue-line? (or/c clue-line-analysis? #f) -> pict?
 (define (render-line-clues axis line-clues line-analysis)
   (define clue-picts
     (for/list ([clue (in-list (if (empty? line-clues)
                                   '(0)
                                   line-clues))]
                [analysis (match line-analysis
+                           [#f (in-cycle '(pending))]
                            ['done (in-cycle '(done))]
                            ['error (in-cycle '(error))]
                            [_ (in-list line-analysis)])])
@@ -385,11 +398,13 @@
     ['column (vc-append (apply vc-append clue-picts)
                         (blank TILE-SIZE 0))]))
 
-;; render-clue-axis : axis? axis-clues? clue-axis-analysis? -> pict?
-(define (render-axis-clues axis axis-clues axis-analysis)
+;; render-clue-axis : axis? axis-clues? (or/c clue-axis-analysis? #f) -> pict?
+(define (render-axis-clues axis axis-clues [axis-analysis #f])
   (define line-picts
     (for/list ([clue-line (in-array axis-clues)]
-               [line-analysis (in-array axis-analysis)])
+               [line-analysis (if axis-analysis
+                                  (in-array axis-analysis)
+                                  (in-cycle '(#f)))])
       (render-line-clues axis clue-line line-analysis)))
   (~> (match axis
         ['row    (apply vr-append line-picts)]

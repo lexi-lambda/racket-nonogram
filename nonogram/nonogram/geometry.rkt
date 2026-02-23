@@ -1,20 +1,30 @@
 #lang racket/base
 
 (require data/gvector
-         pict
          racket/contract
          racket/match
          threading
+         toolbox/pict
          toolbox/print)
 
 (provide integer-point?
          (contract-out
           (struct point ([x real?] [y real?]))
+          [point- (-> point? point? ... point?)]
           [truncate-point (-> point? integer-point?)]
+          [pict-child-point (->* [pict? pict?] [pict-finder/c] point?)]
+
+          (struct size ([width real?] [height real?]))
+          [pict-size (-> pict? size?)]
+          [size-scaling-factor-to-fit (-> size? size? real?)]
 
           (struct rect ([x real?] [y real?] [width real?] [height real?]))
           [rect-x2 (-> rect? real?)]
           [rect-y2 (-> rect? real?)]
+          [rect-tl (-> rect? point?)]
+          [rect-tr (-> rect? point?)]
+          [rect-bl (-> rect? point?)]
+          [rect-br (-> rect? point?)]
           [rect-empty? (-> rect? boolean?)]
           [normalize-rect (-> rect? rect?)]
           [rect-union (-> rect? rect? ... rect?)]
@@ -35,13 +45,26 @@
                                   [xy real?]
                                   [yy real?]
                                   [y0 real?]))
-          [tf:translate (-> real? real? transformation?)]
+          [tf:translate (case->
+                         (-> point? transformation?)
+                         (-> real? real? transformation?))]
           [tf:scale (->* [real?] [real?] transformation?)]
-          [world-to-child (-> pict? pict? transformation?)]))
+          [tf:world-to-child (-> pict? pict? transformation?)]))
 
 ;; -----------------------------------------------------------------------------
 
 (struct point (x y) #:transparent)
+
+(define point-
+  (case-lambda
+    [(p)
+     (point (- (point-x p))
+            (- (point-y p)))]
+    [(p . ps)
+     (for ([p1 p]
+           [p2 (in-list ps)])
+       (point (- (point-x p1) (point-x p2))
+              (- (point-y p1) (point-y p2))))]))
 
 (define (integer-point? v)
   (and (point? v)
@@ -52,12 +75,48 @@
   (point (inexact->exact (truncate (point-x p)))
          (inexact->exact (truncate (point-y p)))))
 
+(define (pict-child-point parent child [find lt-find])
+  (define-values [x y] (find parent child))
+  (point x y))
+
+;; -----------------------------------------------------------------------------
+
+(struct size (width height) #:transparent)
+
+(define (pict-size p)
+  (size (pict-width p)
+        (pict-height p)))
+
+(define (size-scaling-factor-to-fit sz bounds-sz)
+  (match-define (size w h) sz)
+  (match-define (size bw bh) bounds-sz)
+  (define w-fac (/ bw w))
+  (if (> (* h w-fac) bh)
+      (/ bh h)
+      w-fac))
+
 ;; -----------------------------------------------------------------------------
 
 (struct rect (x y width height) #:transparent)
 
 (define (rect-x2 r) (+ (rect-x r) (rect-width r)))
 (define (rect-y2 r) (+ (rect-y r) (rect-height r)))
+
+(define (rect-tl r)
+  (define r* (normalize-rect r))
+  (point (rect-x r*) (rect-y r*)))
+(define (rect-tr r)
+  (define r* (normalize-rect r))
+  (point (rect-x2 r*) (rect-y r*)))
+(define (rect-bl r)
+  (define r* (normalize-rect r))
+  (point (rect-x r*) (rect-y2 r*)))
+(define (rect-br r)
+  (define r* (normalize-rect r))
+  (point (rect-x2 r*) (rect-y2 r*)))
+
+(define (rect-size r)
+  (size (rect-width r) (rect-height r)))
 
 (define (rect-empty? r)
   (or (zero? (rect-width r))
@@ -139,9 +198,12 @@
   (transformation 1.0 0.0 0.0
                   0.0 1.0 0.0))
 
-(define (tf:translate dx dy)
-  (transformation 1.0 0.0 dx
-                  0.0 1.0 dy))
+(define tf:translate
+  (case-lambda
+    [(p) (tf:translate (point-x p) (point-y p))]
+    [(dx dy)
+     (transformation 1.0 0.0 dx
+                     0.0 1.0 dy)]))
 
 (define (tf:scale sx [sy sx])
   (transformation sx 0.0 0.0
@@ -164,7 +226,7 @@
                        (+ (* xy1 yx2) (* yy1 yy2))
                        (+ (* xy1 x02) (* yy1 y02) y01))])))
 
-(define (world-to-child world child)
+(define (tf:world-to-child world child)
   (define-values [x1 y1] (lt-find world child))
   (define-values [x2 y2] (rb-find world child))
   (define world-width (exact->inexact (- x2 x1)))

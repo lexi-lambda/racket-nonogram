@@ -6,7 +6,6 @@
          racket/gui/base
          racket/match
          threading
-         toolbox/format
          toolbox/logging
          "analyze.rkt"
          "core.rkt"
@@ -91,14 +90,18 @@
   (define frame
     (new
      (class frame%
-       (super-new [label "Pictcross"])
+       (super-new [label "Pictcross"]
+                  [width 800]
+                  [height 600])
        (define/augment (on-close)
          (send refresh-timer stop)))))
 
+  (define base-size (get-base-puzzle-size initial-puzzle))
   (define canvas
     (new
      (class canvas%
-       (inherit get-dc
+       (inherit get-client-size
+                get-dc
                 refresh
                 refresh-now)
 
@@ -107,6 +110,7 @@
 
        (define wld (make-world initial-puzzle))
        (define puzzle-renderer #f)
+       (define tf:canvas-to-render tf:identity)
 
        (define/override (on-event event)
          (when puzzle-renderer
@@ -122,7 +126,8 @@
               (set! needs-refresh? #t)]
              [_ (void)])
 
-           (define tile-point (send puzzle-renderer get-tile-at location))
+           (define tile-point (send puzzle-renderer get-tile-at
+                                    (tf* tf:canvas-to-render location)))
            (when (or tile-point (memq event-type '(left-up middle-up right-up)))
              (define new-wld (on-mouse-event wld
                                              event-type
@@ -134,27 +139,42 @@
 
        (define/private (update-renderer!)
          (define backing-scale (send (get-dc) get-backing-scale))
+         (define output-scale (calculate-output-scale))
          (cond
            [(or (not puzzle-renderer)
+                (not (= output-scale (send puzzle-renderer get-output-scale)))
                 (not (= backing-scale (send puzzle-renderer get-backing-scale))))
             (set! puzzle-renderer
                   (new puzzle-renderer%
                        [puzzle (world-puzzle wld)]
                        [board-analysis (world-board-analysis wld)]
-                       [output-scale 2.0]
+                       [output-scale output-scale]
                        [backing-scale backing-scale]))]
            [else
             (send puzzle-renderer update!
                   (world-puzzle wld)
                   (world-board-analysis wld))]))
 
+       (define/private (calculate-output-scale)
+         (define-values [w h] (get-client-size))
+         (size-scaling-factor-to-fit base-size (size w h)))
+       (define/private (get-bounds-pict)
+         (define-values [w h] (get-client-size))
+         (blank w h))
+
        (define/private (paint dc)
          (update-renderer!)
-         (send dc set-smoothing 'smoothed)
          (define rendered-p (send puzzle-renderer get-render))
+
+         (define centered-p (cc-superimpose (get-bounds-pict) rendered-p))
+         (define render-loc (truncate-point (pict-child-point centered-p rendered-p)))
+         (set! tf:canvas-to-render (tf:translate (point- render-loc)))
+
+         (send dc set-smoothing 'smoothed)
          (define timing-end (timing-start 'blit))
-         (draw-pict rendered-p dc 0 0)
+         (draw-pict rendered-p dc (point-x render-loc) (point-y render-loc))
          (timing-end)
+
          (match mouse-location
            [(point x y)
             (draw-pict (cellophane (colorize (disk 10) "red") 0.5) dc (- x 5) (- y 5))]
@@ -170,10 +190,15 @@
          (super on-paint)
          (paint (get-dc)))
 
+       (define/override (on-size w h)
+         (set! needs-refresh? #t)
+         (super on-size w h)
+         (do-refresh))
+
        (super-new
         [parent frame]
-        [min-width 300]
-        [min-height 300]))))
+        [min-width 100]
+        [min-height 100]))))
 
   (define refresh-timer
     (new timer%

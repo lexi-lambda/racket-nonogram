@@ -13,13 +13,19 @@
 
 ;; -----------------------------------------------------------------------------
 
+(define racket-logger (current-logger))
+
 (define-root-logger nonogram #:parent #f)
 (define-nonogram-logger nonogram:timing)
 
 (define (make-nonogram-log-receiver #:level [level 'info]
                                     #:timing? [timing? #f])
-  (make-log-receiver nonogram-logger level #f
-                     (if timing? 'debug 'none) 'nonogram:timing))
+  (choice-evt
+   (make-log-receiver nonogram-logger level #f
+                      (if timing? 'debug 'none) 'nonogram:timing)
+   (if timing?
+       (make-log-receiver racket-logger 'debug 'GC)
+       never-evt)))
 
 ;; -----------------------------------------------------------------------------
 
@@ -28,7 +34,7 @@
   (λ ()
     (define end-time (current-inexact-monotonic-milliseconds))
     (define elapsed-millis (- end-time start-time))
-    (log-nonogram:timing-debug "[~a] finished in ~a ms" name (~r* elapsed-millis #:precision '(= 1)))))
+    (log-nonogram:timing-debug "[~a] finished in ~a ms" name (~r* elapsed-millis #:precision '(= 2)))))
 
 (define (time-pict p name)
   (define draw (make-pict-drawer p))
