@@ -1,8 +1,10 @@
 #lang racket/base
 
 (require racket/contract
+         racket/list
          racket/match
          racket/math
+         racket/string
          "array.rkt")
 
 (module+ example
@@ -45,7 +47,9 @@
 
           (struct puzzle ([board board?]
                           [clues board-clues?]))
-          [clues->puzzle (-> board-clues? puzzle?)]))
+          [clues->puzzle (-> board-clues? puzzle?)]
+
+          [parse-puzzle-nonograms.com-clues (-> string? natural? board-clues?)]))
 
 ;; -----------------------------------------------------------------------------
 
@@ -230,6 +234,12 @@
       #((2 2) (1 1 1 11) (1 3 12) (1 3 3 7) (5 2 1 3 2) (2 1 3 1) (2 1 1 3 1 2) (5 5 2 1) (1 4 2 1 1 1) (5 1 1 1 2) (1 2 2 5) (1 5 4) (6 1) (1 1 5) (3 1 2))
       #((1 1 1 2) (1 2 1 1 1) (1 1 2 1 1 1) (6 1 1) (3 3) (1 2 4) (1 3 1) (2 2 2 1) (4 1 1) (3 2 3) (5 2 2) (2 4 2) (2 4 4) (4 2 3 1) (4 1 1) (3 3 2 1) (3 2 2 1) (3 1 3 1) (3 1 4 2) (3 1 2 2)))))
 
+  (define puzzle-s5-149
+    (clues->puzzle
+     (board-clues
+      #((1 3) (5) (2 2) (1 2 2 1) (2 2 3 2) (2 3 4 1) (6 1 1 2 2 1) (3 1 5 3) (1 6 4 2) (1 2 1 2) (1 1 3) (3 10) (2 1 2 2 1) (3 1 3) (1 2 2))
+      #((3 2) (2 2) (2 1 1) (2 2) (3 2) (2 1 3 1) (2 1 1) (2 1 3) (2 3 2) (9) (1 2 1) (1 2 3) (6 1 4) (1 4 1 2 1) (2 3 1 4) (4 1 1 2) (3 1 1) (3 1) (1 3) (1 3)))))
+
   (define puzzle-s5-150
     (clues->puzzle
      (board-clues
@@ -246,9 +256,28 @@
           (cons "S5 135" puzzle-s5-135)
           (cons "S5 137" puzzle-s5-137)
           (cons "S5 146" puzzle-s5-146)
+          (cons "S5 149" puzzle-s5-149)
           (cons "S5 150" puzzle-s5-150)))
 
   (define all-puzzle-names (map car all-puzzles))
   (define all-puzzles-hash (make-immutable-hash all-puzzles))
   (define (get-puzzle name)
     (hash-ref all-puzzles-hash name #f)))
+
+;; -----------------------------------------------------------------------------
+
+(define (parse-puzzle-nonograms.com-clues str width)
+  (define lines
+    (for/list ([line (in-list (string-split str "/"))])
+      (for/list ([clue (in-list (string-split line "."))])
+        (string->number clue))))
+  (define-values [columns rows] (split-at lines width))
+  (board-clues
+   (list->array rows)
+   (list->array columns)))
+
+(module+ test
+  (check-equal? (parse-puzzle-nonograms.com-clues "2/3/3/3/1.1/1.1/4/3/1.1.1/1" 5)
+                (board-clues
+                 #((1 1) (4) (3) (1 1 1) (1))
+                 #((2) (3) (3) (3) (1 1)))))

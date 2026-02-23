@@ -218,11 +218,14 @@
   (command-line
    #:once-any
    ["--puzzle" name
-    "Load and play puzzle named <name>"
-    (set! what-to-do (cons 'play name))]
+    "Play puzzle named <name>"
+    (set! what-to-do (list 'play name))]
    ["--list-puzzles"
     "List all available puzzles"
     (set! what-to-do 'list)]
+   ["--load-puzzle" puzzle-string columns
+    "Load a custom puzzle from a string encoded in the puzzle-nonograms.com format"
+    (set! what-to-do (list 'load puzzle-string columns))]
    #:once-each
    ["--debug-log-timings"
     "Log timings during puzzle analyze and render"
@@ -246,11 +249,15 @@
     ['list
      (eprintf "Available puzzles:\n")
      (print-puzzle-list)]
-    [(cons 'play puzzle-name)
+    [(list 'play puzzle-name)
      (define pz (get-puzzle puzzle-name))
      (unless pz
        (eprintf "No puzzle named ~v." puzzle-name)
        (exit 1))
-     (run pz)])
+     (run pz)]
+    [(list 'load pz-str cols-str)
+     (define cols (string->number cols-str))
+     (define clues (parse-puzzle-nonograms.com-clues pz-str cols))
+     (run (clues->puzzle clues))])
 
   (close-log-writer log-writer))
