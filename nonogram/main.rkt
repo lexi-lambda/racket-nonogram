@@ -166,12 +166,14 @@
            (set! needs-refresh? #f)
            (refresh-now (λ (dc) (paint dc)))))
 
+       (define/override (on-paint)
+         (super on-paint)
+         (paint (get-dc)))
+
        (super-new
         [parent frame]
         [min-width 300]
-        [min-height 300]
-        [paint-callback
-         (λ (canvas dc) (paint dc))]))))
+        [min-height 300]))))
 
   (define refresh-timer
     (new timer%
@@ -187,5 +189,5 @@
   (define log-writer
     (spawn-pretty-log-writer
      (make-nonogram-log-receiver #:timing? #f)))
-  (run puzzle-s5-135)
+  (run puzzle-s5-150)
   (close-log-writer log-writer))
