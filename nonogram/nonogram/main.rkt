@@ -28,6 +28,12 @@
          (analyze-puzzle puzzle)
          #f))
 
+(struct modifier-keys
+  (shift-down?
+   control-down? ; Control, not Command, on macOS
+   alt-down?)    ; Option on macOS
+  #:transparent)
+
 ;; drag-mode? board? natural? natural? -> board?
 (define (on-mouse-drag mode old-board tile-x tile-y)
   (define old-tile (board-ref old-board tile-x tile-y))
@@ -41,31 +47,45 @@
       [{_       _                } old-tile]))
   (board-set old-board tile-x tile-y new-tile))
 
-;; world? mouse-event-type? (or/c natural? #f) (or/c natural? #f) -> world?
-(define (on-mouse-event wld1 event-type tile-x tile-y)
+;; world? mouse-event-type? modifier-keys? (or/c natural? #f) (or/c natural? #f) -> world?
+(define (on-mouse-event wld1 event-type modifiers tile-x tile-y)
   (define timing-end (timing-start 'on-mouse-event))
+
+  (match-define (modifier-keys shift? control? alt?) modifiers)
+  (define action-type
+    (match* {event-type shift? control? alt?}
+      [{'left-down   #f #f #f} '(start full)]
+      [{'left-down   #f #t #f} '(start cross)]
+      [{'left-down   #f #f #t} '(start mark)]
+      [{'right-down  _  _  #f} '(start cross)]
+      [{'right-down  _  _  #t} '(start mark)]
+      [{'middle-down _  _  _ } '(start mark)]
+      [{(or 'left-up 'middle-up 'right-up) _ _ _} 'end]
+      [{'motion _ _ _} 'drag]
+      [{_ _ _ _} #f]))
+
   ;; process drag mode changes
   (define wld2
-    (match event-type
-      [(or 'left-down 'middle-down 'right-down)
+    (match action-type
+      [(list 'start start-type)
        (define pp (world-puzzle wld1))
        (define old-board (puzzle-board pp))
        (define old-tile (board-ref old-board tile-x tile-y))
        (define new-drag-mode
-         (match* {old-tile event-type}
-           [{(or 'empty 'mark) 'left-down}   'full]
-           [{(or 'empty 'mark) 'right-down}  'cross]
-           [{'empty            'middle-down} 'mark]
-           [{'mark             'middle-down} 'unmark]
-           [{(or 'full 'cross) _}            'empty]))
+         (match* {old-tile start-type}
+           [{(or 'empty 'mark) 'full } 'full]
+           [{(or 'empty 'mark) 'cross} 'cross]
+           [{'empty            'mark } 'mark]
+           [{'mark             'mark } 'unmark]
+           [{(or 'full 'cross) _     } 'empty]))
        (struct-copy world wld1 [drag-mode new-drag-mode])]
-      [(or 'left-up 'middle-up 'right-up)
+      ['end
        (struct-copy world wld1 [drag-mode #f])]
       [_ wld1]))
 
   ;; handle mouse down event board changes
-  (match event-type
-    [(or 'left-down 'middle-down 'right-down 'motion)
+  (match action-type
+    [(or (list 'start _) 'drag)
      #:when (world-drag-mode wld2)
      (define drag-mode (world-drag-mode wld2))
      (define old-puzzle (world-puzzle wld2))
@@ -129,8 +149,16 @@
            (define tile-point (send puzzle-renderer get-tile-at
                                     (tf* tf:canvas-to-render location)))
            (when (or tile-point (memq event-type '(left-up middle-up right-up)))
+             (define modifiers (modifier-keys
+                                (send event get-shift-down)
+                                (send event get-control-down)
+                                (match (system-type 'os)
+                                  ['macosx (send event get-alt-down)]
+                                  [_       (or (send event get-alt-down)
+                                               (send event get-meta-down))])))
              (define new-wld (on-mouse-event wld
                                              event-type
+                                             modifiers
                                              (and~> tile-point point-x)
                                              (and~> tile-point point-y)))
              (unless (equal? wld new-wld)
