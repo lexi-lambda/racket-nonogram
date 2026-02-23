@@ -185,9 +185,47 @@
   (void))
 
 (module+ main
-  (require (submod "core.rkt" example))
+  (require racket/cmdline
+           (submod "core.rkt" example))
+
+  (define log-timings? #f)
+  (define what-to-do #f)
+  (command-line
+   #:once-any
+   ["--puzzle" name
+    "Load and play puzzle named <name>"
+    (set! what-to-do (cons 'play name))]
+   ["--list-puzzles"
+    "List all available puzzles"
+    (set! what-to-do 'list)]
+   #:once-each
+   ["--debug-log-timings"
+    "Log timings during puzzle analyze and render"
+    (set! log-timings? #t)])
+
   (define log-writer
     (spawn-pretty-log-writer
-     (make-nonogram-log-receiver #:timing? #f)))
-  (run puzzle-s5-150)
+     (make-nonogram-log-receiver #:timing? log-timings?)))
+
+  (define (print-puzzle-list)
+    (for ([name+pz (in-list all-puzzles)])
+      (match-define (cons name pz) name+pz)
+      (define b (puzzle-board pz))
+      (eprintf "  ~v (~a×~a)\n" name (board-width b) (board-height b))))
+
+  (match what-to-do
+    [#f
+     (eprintf "No puzzle selected. Please select one of the following puzzles with `--puzzle <name>`:\n")
+     (print-puzzle-list)
+     (exit 1)]
+    ['list
+     (eprintf "Available puzzles:\n")
+     (print-puzzle-list)]
+    [(cons 'play puzzle-name)
+     (define pz (get-puzzle puzzle-name))
+     (unless pz
+       (eprintf "No puzzle named ~v." puzzle-name)
+       (exit 1))
+     (run pz)])
+
   (close-log-writer log-writer))

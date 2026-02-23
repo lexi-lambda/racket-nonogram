@@ -6,7 +6,16 @@
          "array.rkt")
 
 (module+ example
-  (provide (all-defined-out)))
+  (provide board-1
+           board-2
+           clues-1
+           clues-2
+           puzzle-1
+           puzzle-2
+
+           all-puzzles
+           all-puzzle-names
+           get-puzzle))
 
 (module+ test
   (require rackunit
@@ -225,4 +234,21 @@
     (clues->puzzle
      (board-clues
       #((2 3 2 1) (3 1 2 2 1) (1 1 1 4 1 2) (1 3 1 2 1 1 2 1) (2 2 1 1 1 1 1) (3 1 1 2 2 1) (2 3 4 1 1) (4 6 1) (1 3 4 1) (3 1 3 2) (2 2 1 1) (3 1 2) (2 3 1) (5 1 1) (6 2))
-      #((1 1) (3 1) (2 2) (1 1) (4 1) (1 6 2) (1 1 1 1 2 2) (1 1 1 5 2) (1 4 1) (2 2 1 1 2 1) (1 1 1 4 1) (1 1 2 2) (3 5 1) (3 7 1) (1 2 4 2) (1 2) (1 2 3 5) (1 2 2 1 1) (1 3 2) (2))))))
+      #((1 1) (3 1) (2 2) (1 1) (4 1) (1 6 2) (1 1 1 1 2 2) (1 1 1 5 2) (1 4 1) (2 2 1 1 2 1) (1 1 1 4 1) (1 1 2 2) (3 5 1) (3 7 1) (1 2 4 2) (1 2) (1 2 3 5) (1 2 2 1 1) (1 3 2) (2)))))
+
+  (define all-puzzles
+    (list (cons "Test 1" puzzle-1)
+          (cons "Test 2" puzzle-2)
+          (cons "S5 001" puzzle-s5-001)
+          (cons "S5 016" puzzle-s5-016)
+          (cons "S5 031" puzzle-s5-031)
+          (cons "S5 061" puzzle-s5-061)
+          (cons "S5 135" puzzle-s5-135)
+          (cons "S5 137" puzzle-s5-137)
+          (cons "S5 146" puzzle-s5-146)
+          (cons "S5 150" puzzle-s5-150)))
+
+  (define all-puzzle-names (map car all-puzzles))
+  (define all-puzzles-hash (make-immutable-hash all-puzzles))
+  (define (get-puzzle name)
+    (hash-ref all-puzzles-hash name #f)))
