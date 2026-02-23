@@ -7,8 +7,11 @@
 
 (define deps
   '("base"
+    "data-lib"
+    "draw-lib"
     "gui-lib"
     "pict-lib"
-    "threading-lib"))
+    "threading-lib"
+    "toolbox-lib"))
 (define build-deps
   '("rackunit-lib"))
