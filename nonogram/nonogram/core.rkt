@@ -1,10 +1,12 @@
 #lang racket/base
 
-(require racket/contract
+(require json
+         racket/contract
          racket/list
          racket/match
          racket/math
          racket/string
+         threading
          "array.rkt")
 
 (module+ example
@@ -34,9 +36,10 @@
           [board-height (-> board? natural?)]
           [board-ref (-> board? natural? natural? tile?)]
           [board-set (-> board? natural? natural? tile? board?)]
-          [board-row (-> board? natural? (arrayof tile?))]
+          [board-row (-> board? natural? tile-line?)]
           [board-column (-> board? natural? tile-line?)]
           [board-line (-> board? axis? natural? tile-line?)]
+          [board-clear (-> board? board?)]
 
           [clue? flat-contract?]
           [line-clues? flat-contract?]
@@ -44,12 +47,16 @@
           (struct board-clues ([row-clues axis-clues?]
                                [column-clues axis-clues?]))
           [board-clues-line (-> board-clues? axis? natural? line-clues?)]
+          [solved-line->clues (-> tile-line? line-clues?)]
+          [solved-board->clues (-> board? board-clues?)]
 
           (struct puzzle ([board board?]
                           [clues board-clues?]))
           [clues->puzzle (-> board-clues? puzzle?)]
+          [solved-board->puzzle (-> board? puzzle?)]
 
-          [parse-puzzle-nonograms.com-clues (-> string? natural? board-clues?)]))
+          [parse-puzzle-nonograms.com-clues (-> string? natural? board-clues?)]
+          [parse-nonograms.org-solution (-> string? board?)]))
 
 ;; -----------------------------------------------------------------------------
 
@@ -138,6 +145,10 @@
     ['row (board-row b i)]
     ['column (board-column b i)]))
 
+;; board-clear : board? -> board?
+(define (board-clear b)
+  (make-board (board-width b) (board-height b)))
+
 ;; -----------------------------------------------------------------------------
 ;; clues
 
@@ -174,6 +185,43 @@
   (check-equal? (board-clues-line clues-1 'column 1) '(1))
   (check-equal? (board-clues-line clues-1 'column 2) '(3)))
 
+;; solved-line->clues : tile-line? -> line-clues?
+(define (solved-line->clues tiles)
+  (define num-tiles (array-length tiles))
+  (let outer-loop ([i 0])
+    (if (< i num-tiles)
+        (match (array-ref tiles i)
+          ['full
+           (let inner-loop ([j (add1 i)])
+             (if (< j num-tiles)
+                 (match (array-ref tiles j)
+                   ['full (inner-loop (add1 j))]
+                   [_ (cons (- j i) (outer-loop j))])
+                 (list (- j i))))]
+          [_ (outer-loop (add1 i))])
+        '())))
+
+(module+ test
+  (check-equal? (solved-line->clues
+                 #(full cross full full cross cross full full full cross full))
+                '(1 2 3 1)))
+
+(define (solved-board->clues b)
+  (define w (board-width b))
+  (define h (board-height b))
+  (board-clues
+   (for/array #:length h ([i (in-range h)])
+     (solved-line->clues (board-row b i)))
+   (for/array #:length w ([i (in-range w)])
+     (solved-line->clues (board-column b i)))))
+
+(module+ test
+  (check-equal? (solved-board->clues
+                 (board #(#(full  cross cross full)
+                          #(cross full  full  cross))))
+                (board-clues #((1 1) (2))
+                             #((1) (1) (1) (1)))))
+
 ;; -----------------------------------------------------------------------------
 ;; puzzle
 
@@ -187,6 +235,10 @@
   (puzzle (make-board (array-length (board-clues-column-clues clues))
                       (array-length (board-clues-row-clues clues)))
           clues))
+
+;; solved-board->puzzle : board? -> puzzle?
+(define (solved-board->puzzle b)
+  (puzzle (board-clear b) (solved-board->clues b)))
 
 (module+ example
   (define puzzle-1 (puzzle board-1 clues-1))
@@ -266,6 +318,7 @@
 
 ;; -----------------------------------------------------------------------------
 
+;; The puzzle string can be obtained from `window.task` on a puzzle page.
 (define (parse-puzzle-nonograms.com-clues str width)
   (define lines
     (for/list ([line (in-list (string-split str "/"))])
@@ -281,3 +334,56 @@
                 (board-clues
                  #((1 1) (4) (3) (1 1 1) (1))
                  #((2) (3) (3) (3) (1 1)))))
+
+;; The puzzle string can be obtained from `JSON.stringify(window.d)` on a
+;; puzzle page. It seems to be ciphered somehow. This function replicates the
+;; logic used by the JS on the page to decode the solution.
+(define (parse-nonograms.org-solution str)
+  (define d (~> (string->jsexpr str)
+                  (map list->array _)
+                  list->array))
+  (define (D i)
+    (define d* (array-ref d i))
+    (λ (j) (array-ref d* j)))
+
+  (define (decipher/1 i)
+    (define A (D i))
+    (define n (A 3))
+    (- (+ (modulo (A 0) n)
+          (modulo (A 1) n))
+       (modulo (A 2) n)))
+
+  (define (decipher/2 i)
+    (define A (D i))
+    (define n (A 3))
+    (+ (expt (modulo (A 0) n) 2)
+       (* (modulo (A 1) n) 2)
+       (* (modulo (A 2) n))))
+
+  (define width (decipher/1 1))
+  (define height (decipher/1 2))
+  (define board-start (+ (decipher/1 3) 6))
+  (define board-length (decipher/2 (sub1 board-start)))
+  (define B (D board-start))
+
+  (define rows (for/array ([i (in-range height)])
+                 (make-vector width 0)))
+  (for ([i (in-inclusive-range board-start (+ board-start board-length))])
+    (define R (D i))
+    (define row-i (- (R 3) (B 3) 1))
+    (when (>= row-i 0)
+      (define row (array-ref rows row-i))
+      (for ([j (in-range (- (R 0) (B 0) 1)
+                         (- (+ (R 0) (R 1)) (B 0) (B 1) 1))])
+        (vector-set! row j (- (R 2) (B 2))))))
+
+  (board (for/array #:length height ([row (in-array rows)])
+           (for/array #:length width ([tile (in-vector row)])
+             (match tile [0 'cross] [1 'full])))))
+
+(module+ test
+  (check-equal? (parse-nonograms.org-solution "[[1209,984,703,991],[20,38,54,61],[24,24,44,46],[47,11,57,58],[25,12,59,16],[12,25,16,60],[29,39,28,3],[23,26,21,25],[26,28,22,27],[26,27,22,29],[24,27,22,29],[24,29,22,28],[26,27,22,26],[15,18,42,4],[51,28,1,15],[52,29,10,19],[55,29,6,16],[52,29,11,18],[53,29,3,19],[53,30,2,18],[52,29,6,16],[53,29,3,17],[54,29,5,19],[53,29,3,16],[52,29,8,17],[55,29,10,19],[55,29,13,18],[54,29,5,16],[55,29,8,17],[54,29,5,17]]")
+                (board #(#(cross cross full cross)
+                         #(cross cross full full)
+                         #(full  full  full cross)
+                         #(full  cross full cross)))))

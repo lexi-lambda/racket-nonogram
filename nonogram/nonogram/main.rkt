@@ -250,10 +250,13 @@
     (set! what-to-do (list 'play name))]
    ["--list-puzzles"
     "List all available puzzles"
-    (set! what-to-do 'list)]
-   ["--load-puzzle" puzzle-string columns
-    "Load a custom puzzle from a string encoded in the puzzle-nonograms.com format"
-    (set! what-to-do (list 'load puzzle-string columns))]
+    (set! what-to-do 'list-puzzles)]
+   ["--load-puzzle-no" puzzle-string
+    "Load puzzle encoded in the nonograms.org format"
+    (set! what-to-do (list 'load/no puzzle-string))]
+   ["--load-puzzle-pnc" puzzle-string columns
+    "Load puzzle encoded in the puzzle-nonograms.com format"
+    (set! what-to-do (list 'load/pnc puzzle-string columns))]
    #:once-each
    ["--debug-log-timings"
     "Log timings during puzzle analyze and render"
@@ -274,7 +277,7 @@
      (eprintf "No puzzle selected. Please select one of the following puzzles with `--puzzle <name>`:\n")
      (print-puzzle-list)
      (exit 1)]
-    ['list
+    ['list-puzzles
      (eprintf "Available puzzles:\n")
      (print-puzzle-list)]
     [(list 'play puzzle-name)
@@ -283,7 +286,10 @@
        (eprintf "No puzzle named ~v." puzzle-name)
        (exit 1))
      (run pz)]
-    [(list 'load pz-str cols-str)
+    [(list 'load/no pz-str)
+     (define solution (parse-nonograms.org-solution pz-str))
+     (run (solved-board->puzzle solution))]
+    [(list 'load/pnc pz-str cols-str)
      (define cols (string->number cols-str))
      (define clues (parse-puzzle-nonograms.com-clues pz-str cols))
      (run (clues->puzzle clues))])
