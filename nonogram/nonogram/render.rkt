@@ -493,8 +493,10 @@
                (inset 0 0 0 MEGA-CLUE-MARGIN)))])))
 
   (match axis
-    ['row    (apply hc-append MEGA-CLUE-GAP chunk-picts)]
-    ['column (apply vc-append chunk-picts)]))
+    ['row    (hc-append (apply hc-append MEGA-CLUE-GAP chunk-picts)
+                        (blank 0 (* TILE-SIZE 2)))]
+    ['column (vc-append (apply vc-append chunk-picts)
+                        (blank (* TILE-SIZE 2) 0))]))
 
 ;; render-line-clues : axis? line-clues? (or/c line-clue-analysis? #f) -> pict?
 (define (render-line-clues axis clues [line-analysis #f])
