@@ -153,7 +153,7 @@
         single-line-analysis?
         mega-line-analysis?))
 
-(define axis-clue-analysis? (listof line-clue-analysis?))
+(define axis-clue-analysis? (arrayof line-clue-analysis?))
 (struct board-analysis
   (row-analysis     ;; axis-clue-analysis?
    column-analysis) ;; axis-clue-analysis?
@@ -1807,21 +1807,12 @@
 
 ;; -----------------------------------------------------------------------------
 
-;; analyze-line-at : puzzle? axis? natural? -> line-analysis?
-#;(define (analyze-line-at pz axis i)
-  (analyze-line (board-clues-line (puzzle-clues pz) axis i)
-                (board-line (puzzle-board pz) axis i)))
-
-;; analyze-lines-at : puzzle? integer-point? -> (values line-analysis? line-analysis?)
-#;(define (analyze-lines-at pz location)
-  (match-define (point x y) location)
-  (values (analyze-line-at pz 'row y)
-          (analyze-line-at pz 'column x)))
-
 ;; analyze-puzzle : puzzle? -> board-analysis?
 (define (analyze-puzzle pp)
   (define (do-axis axis)
-    (for/list ([tiles+clues (in-list (puzzle-axis-tiles+clues pp axis))])
+    (define tss+css (puzzle-axis-tiles+clues pp axis))
+    (for/array #:length (array-length tss+css)
+               ([tiles+clues (in-array tss+css)])
       (match tiles+clues
         [(array tile-line clue-line)
          (analyze-line clue-line tile-line)]
@@ -1839,19 +1830,32 @@
                                   #(empty empty full)))
                          clues-1))
                 (board-analysis
-                 '((pending) (done pending) (pending))
-                 '(done (pending) error))))
+                 #((pending) (done pending) (pending))
+                 #(done (pending) error))))
+
+;; reanalyze-line-at : puzzle? axis-clue-analysis? axis? natural? -> axis-clue-analysis?
+(define (reanalyze-line-at pz old-axis-analysis axis i)
+  (define board (puzzle-board pz))
+  (define axis-clues (board-clues-axis (puzzle-clues pz) axis))
+  (match (line-index->axis-clue-index axis-clues i)
+    [(array clue-i line-i)
+     (define i* (- i line-i))
+     (define new-analysis
+       (analyze-line/mega (line-clues-clues (array-ref axis-clues clue-i))
+                          (array (board-line board axis i*)
+                                 (board-line board axis (add1 i*)))))
+     (array-set old-axis-analysis clue-i new-analysis)]
+    [clue-i
+     (define new-analysis
+       (analyze-line (line-clues-clues (array-ref axis-clues clue-i))
+                     (board-line board axis i)))
+     (array-set old-axis-analysis clue-i new-analysis)]))
 
 ;; reanalyze-lines-at : puzzle? board-analysis? integer-point? -> board-analysis?
-#;(define (reanalyze-lines-at new-pz old-board-analysis location)
+(define (reanalyze-lines-at new-pz old-board-analysis location)
   (match-define (point x y) location)
   (define old-row-analyses (board-analysis-row-analysis old-board-analysis))
   (define old-column-analyses (board-analysis-column-analysis old-board-analysis))
-  (define-values [new-row-analysis new-column-analysis] (analyze-lines-at new-pz location))
   (board-analysis
-   (array-set old-row-analyses (point-y location) new-row-analysis)
-   (array-set old-column-analyses (point-x location) new-column-analysis)))
-
-(define (reanalyze-lines-at new-pz old-board-analysis location)
-  ;; FIXME: Adapt to support mega lines.
-  (analyze-puzzle new-pz))
+   (reanalyze-line-at new-pz old-row-analyses 'row y)
+   (reanalyze-line-at new-pz old-column-analyses 'column x)))

@@ -28,11 +28,13 @@
          array-ref
          array-set
 
+         array-map
          in-array
          for/array
          for*/array
 
          vector->array
+         unsafe-vector*->array!
          array->vector
          list->array
          array->list)
@@ -60,6 +62,9 @@
 
 (define (list->array lst)
   (apply vector-immutable lst))
+
+(define (array-map proc arr)
+  (unsafe-vector*->array! (vector-map proc arr)))
 
 ;; -----------------------------------------------------------------------------
 

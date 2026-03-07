@@ -506,9 +506,9 @@
 ;; render-clue-axis : axis? axis-clues? (or/c clue-axis-analysis? #f) -> pict?
 (define (render-axis-clues axis axis-clues [axis-analysis #f])
   (define line-picts
-    (for/list ([clue-line (in-list axis-clues)]
+    (for/list ([clue-line (in-array axis-clues)]
                [line-analysis (if axis-analysis
-                                  (in-list axis-analysis)
+                                  (in-array axis-analysis)
                                   (in-cycle '(#f)))])
       (render-line-clues axis clue-line line-analysis)))
   (~> (match axis
