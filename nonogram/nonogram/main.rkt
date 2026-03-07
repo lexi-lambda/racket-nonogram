@@ -242,7 +242,7 @@
            (submod "core.rkt" example))
 
   (define log-timings? #f)
-  (define what-to-do #f)
+  (define what-to-do '(play "S5 M001"))
   (command-line
    #:once-any
    ["--puzzle" name

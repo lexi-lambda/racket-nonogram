@@ -1,8 +1,10 @@
 #lang racket/base
 
 (require (for-syntax racket/base
-                     syntax/parse)
+                     syntax/parse
+                     syntax/transformer)
          racket/contract
+         racket/match
          racket/math
          racket/vector
 
@@ -19,6 +21,8 @@
 
 (provide array?
          arrayof
+         array/c
+         array
          make-array
          array-length
          array-ref
@@ -37,6 +41,16 @@
 
 (define (arrayof ctc)
   (vectorof ctc #:immutable #t))
+
+(define (array/c . ctcs)
+  (apply vector/c ctcs #:immutable #t))
+
+(define-match-expander array
+  (syntax-parser
+    [(_ pat ...)
+     #`(? array? #,(syntax/loc this-syntax
+                     (vector pat ...)))])
+  (make-variable-like-transformer #'vector-immutable))
 
 (define (make-array size v)
   (unsafe-vector*->array! (make-vector size v)))
