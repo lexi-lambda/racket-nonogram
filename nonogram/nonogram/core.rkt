@@ -513,6 +513,36 @@
              (line-clues 'mega '(2 4))
              (line-clues 'single '(1 2))))))
 
+  (define puzzle-s5-m106
+    (clues->puzzle
+     (board-clues
+      (array (line-clues 'single '(1 3))
+             (line-clues 'single '(2 1))
+             (line-clues 'mega '(#[(4) (2)] 4))
+             (line-clues 'single '(2 1 2))
+             (line-clues 'single '(1 2 2 1))
+             (line-clues 'single '(1 9))
+             (line-clues 'single '(1 5 4))
+             (line-clues 'single '(1 9 1))
+             (line-clues 'mega '(#[() (1)] 6 #[(5) (2)] 3))
+             (line-clues 'single '(1 2 6 1))
+             (line-clues 'single '(1 1 3 2))
+             (line-clues 'single '(3 2 2))
+             (line-clues 'single '(2 3)))
+      (array (line-clues 'single '(2))
+             (line-clues 'single '(2 1 1))
+             (line-clues 'single '(2 2 1 1))
+             (line-clues 'single '(1 3 1))
+             (line-clues 'single '(1 2 1 3))
+             (line-clues 'single '(1 3 1 1))
+             (line-clues 'mega '(2 9 2))
+             (line-clues 'single '(1 5 3))
+             (line-clues 'mega '(#[(1) (1)] 10 5))
+             (line-clues 'single '(3 4 2))
+             (line-clues 'single '(2 1 3 1 1))
+             (line-clues 'single '(1 1 2 1 4))
+             (line-clues 'single '(2 2 3 3))))))
+
   (define all-puzzles
     (list (cons "Test 1" puzzle-1)
           (cons "Test 2" puzzle-2)
@@ -530,7 +560,8 @@
           (cons "S5 M001" puzzle-s5-m001)
           (cons "S5 M016" puzzle-s5-m016)
           (cons "S5 M016 (solved)" puzzle-s5-m016/solved)
-          (cons "S5 M076" puzzle-s5-m076)))
+          (cons "S5 M076" puzzle-s5-m076)
+          (cons "S5 M106" puzzle-s5-m106)))
 
   (define all-puzzle-names (map car all-puzzles))
   (define all-puzzles-hash (make-immutable-hash all-puzzles))

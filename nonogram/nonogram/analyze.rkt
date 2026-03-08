@@ -1101,7 +1101,7 @@
 
     ;; board-set!/mega : mega-index? tile? -> void?
     (define (board-set!/mega mi val #:contradiction-reason [contradiction-reason #f])
-      (tiles-set!/mega board-tiles mi val)
+      (tiles-set!/mega board-tiles mi val #:contradiction-reason contradiction-reason)
 
       ; propagate crosses to clues
       (when (tile-cross? val)
@@ -1130,7 +1130,8 @@
       (unless (single-line-index? clue-i)
         (raise-arguments-error who "clue index refers to a mega clue"
                                "clue index" clue-i))
-      (clue-tiles-set!/mega clue-i (mega-index (single-line-index-line clue-i) i) val))
+      (clue-tiles-set!/mega clue-i (mega-index (single-line-index-line clue-i) i) val
+                            #:contradiction-reason contradiction-reason))
 
     (define (clue-tiles-fill! clue-i val [start-i 0] [end-i num-tiles]
                               #:contradiction-reason [contradiction-reason #f])
@@ -1803,6 +1804,14 @@
   (check-equal? (analyze-line/mega '(3 3 #[(1 1) ()])
                                    #(#(empty empty empty empty empty empty empty)
                                      #(full  cross full  full  cross cross cross)))
+                'error)
+  (check-equal? (analyze-line/mega '(#[(1) (1)] 2 2)
+                                   #(#(empty empty empty empty empty empty)
+                                     #(full  full  empty empty empty empty)))
+                'error)
+  (check-equal? (analyze-line/mega '(#[(1) (1)] 2 2)
+                                   #(#(empty full empty empty empty empty)
+                                     #(full  full empty empty empty empty)))
                 'error))
 
 ;; -----------------------------------------------------------------------------
