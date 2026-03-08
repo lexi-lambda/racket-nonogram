@@ -31,6 +31,7 @@
           [tile? flat-contract?]
           [mega-line-offset? flat-contract?]
           [tile-line? flat-contract?]
+          [mega-tile-line? flat-contract?]
 
           (struct board ([rows (arrayof tile-line?)]))
           [make-board (-> natural? natural? board?)]
@@ -91,6 +92,7 @@
 
 ;; A *tile line* is a row or a column of tiles.
 (define tile-line? (arrayof tile?))
+(define mega-tile-line? (array/c tile-line? tile-line?))
 
 ;; -----------------------------------------------------------------------------
 ;; board
