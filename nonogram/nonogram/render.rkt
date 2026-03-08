@@ -97,8 +97,15 @@
 (define CLUE-SIZE 16)
 (define CLUE-GAP 6)
 (define CLUE-BOARD-GAP 4)
+(define CLUE-PENDING-COLOR (make-color #x30 #x30 #x30))
 (define CLUE-DONE-COLOR "gray")
 (define CLUE-ERROR-COLOR "red")
+(define MEGA-CLUE-SIZE 20)
+(define MEGA-CLUE-GAP 4)
+(define MEGA-CLUE-TWO-PADDING 1)
+(define MEGA-CLUE-MARGIN 2)
+(define MEGA-CLUE-PADDING 3)
+(define MEGA-CLUE-RADIUS 2)
 
 (define TILE-SIZE 20)
 (define TILE-EMPTY-COLOR-1 "white")
@@ -317,13 +324,15 @@
       (define clues (puzzle-clues puzzle))
       (set! rendered-puzzle
             (~> (hb-append
-                 (render-axis-clues 'row
-                                    (board-clues-row-clues clues)
-                                    (and~> board-analysis board-analysis-row-analysis))
+                 (~> (render-axis-clues 'row
+                                        (board-clues-row-clues clues)
+                                        (and~> board-analysis board-analysis-row-analysis))
+                     (inset 0 (/ GRID-BORDER-WIDTH 2)))
                  (vr-append
-                  (render-axis-clues 'column
-                                     (board-clues-column-clues clues)
-                                     (and~> board-analysis board-analysis-column-analysis))
+                  (~> (render-axis-clues 'column
+                                         (board-clues-column-clues clues)
+                                         (and~> board-analysis board-analysis-column-analysis))
+                      (inset (/ GRID-BORDER-WIDTH 2) 0))
                   board-pict))
                 (freeze-to* rendered-puzzle-bm-box)
                 (inset 5)
@@ -372,31 +381,129 @@
 
 ;; -----------------------------------------------------------------------------
 
-;; render-clue : clue? (or/c clue-analysis? 'error) -> pict?
-(define (render-clue clue [analysis 'pending])
-  (define p (text (number->string clue) '() CLUE-SIZE))
+;; clue-analysis-color : (or/c clue-analysis? 'error #f) -> color?
+(define (clue-analysis-color analysis)
   (match analysis
-    ['pending p]
-    ['done (colorize p CLUE-DONE-COLOR)]
-    ['error (colorize p CLUE-ERROR-COLOR)]))
+    [(or #f 'pending) CLUE-PENDING-COLOR]
+    ['done CLUE-DONE-COLOR]
+    ['error CLUE-ERROR-COLOR]))
 
-;; render-clue : axis? clue-line? (or/c clue-line-analysis? #f) -> pict?
-(define (render-line-clues axis line-clues line-analysis)
+(define CLUE-FONT
+  (make-font #:size CLUE-SIZE
+             #:size-in-pixels? #t
+             #:font-list the-font-list
+             #:hinting 'unaligned))
+
+(define MEGA-CLUE-FONT
+  (make-font #:size MEGA-CLUE-SIZE
+             #:size-in-pixels? #t
+             #:font-list the-font-list
+             #:hinting 'unaligned))
+
+;; render-clue/single : clue? (or/c clue-analysis? 'error #f) -> pict?
+(define (render-clue/single clue [analysis #f])
+  (~> (text (number->string clue) CLUE-FONT)
+      (colorize (clue-analysis-color analysis))))
+
+;; render-clue/mega : axis? clue? (or/c clue-analysis? 'error #f) -> pict?
+(define (render-clue/mega axis clue [analysis #f])
+  (define clue-str (number->string clue))
+
+  (define font (if (or (eq? axis 'column) (= clue 2))
+                   CLUE-FONT
+                   MEGA-CLUE-FONT))
+  (define text-p (text clue-str font))
+  (define text-w (pict-width text-p))
+  (define text-h (pict-height text-p))
+
+  (define-values [total-w total-h text-x text-y]
+    (match axis
+      ['row
+       (define padding (if (= clue 2) MEGA-CLUE-TWO-PADDING MEGA-CLUE-PADDING))
+       (define total-h (* (- TILE-SIZE MEGA-CLUE-MARGIN) 2))
+       (values (+ text-w (* padding 2))
+               total-h
+               padding
+               (/ (- total-h text-h) 2))]
+      ['column
+       (define total-w (* (- TILE-SIZE MEGA-CLUE-MARGIN) 2))
+       (values total-w
+               text-h
+               (/ (- total-w text-w) 2)
+               0)]))
+
+  (define path (new dc-path%))
+  (send path rounded-rectangle 0 0 total-w total-h MEGA-CLUE-RADIUS)
+  (send path text-outline font clue-str text-x text-y)
+
+  (define pen (make-pen #:style 'transparent))
+  (define brush (make-brush #:color (clue-analysis-color analysis)))
+  (unsafe-dc
+   (λ (dc x y)
+     (define old-pen (send dc get-pen))
+     (define old-brush (send dc get-brush))
+     (send dc set-pen pen)
+     (send dc set-brush brush)
+     (send dc draw-path path x y)
+     (send dc set-brush old-brush)
+     (send dc set-pen old-pen))
+   total-w
+   total-h))
+
+;; render-line-clues/single : axis? single-line-clues? (or/c single-line-analysis? #f) -> pict?
+(define (render-line-clues/single axis line-clues [line-analysis #f])
   (define clue-picts
-    (for/list ([clue (in-list (if (empty? line-clues)
-                                  '(0)
-                                  line-clues))]
-               [analysis (match line-analysis
-                           [#f (in-cycle '(pending))]
-                           ['done (in-cycle '(done))]
-                           ['error (in-cycle '(error))]
-                           [_ (in-list line-analysis)])])
-      (render-clue clue analysis)))
+    (for/list ([clue (in-list line-clues)]
+               [analysis (if (list? line-analysis)
+                             (in-list line-analysis)
+                             (in-cycle (list line-analysis)))])
+      (render-clue/single clue analysis)))
   (match axis
     ['row    (hc-append (apply hc-append CLUE-GAP clue-picts)
-                        (blank CLUE-BOARD-GAP TILE-SIZE))]
+                        (blank 0 TILE-SIZE))]
     ['column (vc-append (apply vc-append clue-picts)
                         (blank TILE-SIZE 0))]))
+
+;; render-line-clues/mega : axis? mega-line-clues? (or/c mega-line-analysis? #f) -> pict?
+(define (render-line-clues/mega axis line-clues-lst [line-analysis #f])
+  (define line-clues (list->array line-clues-lst))
+  (define num-chunks (array-length line-clues))
+  (define chunk-picts
+    (for/list ([(chunk i) (in-indexed (in-array line-clues))]
+               [analysis (if (list? line-analysis)
+                             (in-list line-analysis)
+                             (in-cycle (list line-analysis)))])
+      (match chunk
+        [(array clues-0 clues-1)
+         (define-values [analysis-0 analysis-1]
+           (if (array? analysis)
+               (values (array-ref analysis 0) (array-ref analysis 1))
+               (values analysis analysis)))
+         (define p0 (render-line-clues/single axis clues-0 analysis-0))
+         (define p1 (render-line-clues/single axis clues-1 analysis-1))
+         (match axis
+           ['row    (vr-append p0 p1)]
+           ['column (hb-append p0 p1)])]
+
+        [clue
+         (~> (render-clue/mega axis clue analysis)
+             (when~> (and (eq? axis 'column)
+                          (or (= (add1 i) num-chunks)
+                              (clue? (array-ref line-clues (add1 i)))))
+               (inset 0 0 0 MEGA-CLUE-MARGIN)))])))
+
+  (match axis
+    ['row    (hc-append (apply hc-append MEGA-CLUE-GAP chunk-picts)
+                        (blank 0 (* TILE-SIZE 2)))]
+    ['column (vc-append (apply vc-append chunk-picts)
+                        (blank (* TILE-SIZE 2) 0))]))
+
+;; render-line-clues : axis? line-clues? (or/c line-clue-analysis? #f) -> pict?
+(define (render-line-clues axis clues [line-analysis #f])
+  (match-define (line-clues type clues*) clues)
+  (match type
+    ['single (render-line-clues/single axis (if (empty? clues*) '(0) clues*) line-analysis)]
+    ['mega (render-line-clues/mega axis clues* line-analysis)]))
 
 ;; render-clue-axis : axis? axis-clues? (or/c clue-axis-analysis? #f) -> pict?
 (define (render-axis-clues axis axis-clues [axis-analysis #f])
@@ -407,6 +514,7 @@
                                   (in-cycle '(#f)))])
       (render-line-clues axis clue-line line-analysis)))
   (~> (match axis
-        ['row    (apply vr-append line-picts)]
+        ['row    (~> (apply vr-append line-picts)
+                     (inset 0 0 CLUE-BOARD-GAP 0))]
         ['column (apply hb-append line-picts)])
       (time-pict 'render-axis-clues)))

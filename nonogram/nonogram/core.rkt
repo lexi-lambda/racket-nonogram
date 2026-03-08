@@ -7,6 +7,7 @@
          racket/math
          racket/string
          threading
+         toolbox/who
          "array.rkt")
 
 (module+ example
@@ -34,6 +35,7 @@
           [make-board (-> natural? natural? board?)]
           [board-width (-> board? natural?)]
           [board-height (-> board? natural?)]
+          [board-axis-length (-> board? axis? natural?)]
           [board-ref (-> board? natural? natural? tile?)]
           [board-set (-> board? natural? natural? tile? board?)]
           [board-row (-> board? natural? tile-line?)]
@@ -42,11 +44,27 @@
           [board-clear (-> board? board?)]
 
           [clue? flat-contract?]
-          [line-clues? flat-contract?]
+          [single-line-clues? flat-contract?]
+          [mega-line-clues-chunk? flat-contract?]
+          [mega-line-clues? flat-contract?]
+          [line-clues-type? flat-contract?]
+          (struct line-clues ([type line-clues-type?]
+                              [clues (or/c single-line-clues?
+                                           mega-line-clues?)]))
           [axis-clues? flat-contract?]
           (struct board-clues ([row-clues axis-clues?]
                                [column-clues axis-clues?]))
-          [board-clues-line (-> board-clues? axis? natural? line-clues?)]
+          [axis-clues-line-count (-> axis-clues? natural?)]
+          [line-index->axis-clue-index (-> axis-clues?
+                                           natural?
+                                           (or/c natural?
+                                                 (array/c natural? (or/c 0 1))))]
+          [board-clues-axis (-> board-clues? axis? axis-clues?)]
+          [board-clues-line (-> board-clues?
+                                axis?
+                                natural?
+                                (or/c single-line-clues?
+                                      (array/c mega-line-clues? (or/c 0 1))))]
           [solved-line->clues (-> tile-line? line-clues?)]
           [solved-board->clues (-> board? board-clues?)]
 
@@ -54,6 +72,11 @@
                           [clues board-clues?]))
           [clues->puzzle (-> board-clues? puzzle?)]
           [solved-board->puzzle (-> board? puzzle?)]
+          [puzzle-axis-tiles+clues
+           (-> puzzle?
+               axis?
+               (arrayof (or/c (array/c tile-line? single-line-clues?)
+                              (array/c tile-line? tile-line? mega-line-clues?))))]
 
           [parse-puzzle-nonograms.com-clues (-> string? natural? board-clues?)]
           [parse-nonograms.org-solution (-> string? board?)]))
@@ -105,6 +128,14 @@
   (check-equal? (board-height board-1) 3)
   (check-equal? (board-height board-2) 2))
 
+;; board-axis-length : board? axis? -> natural?
+;;   (Note that this returns the length of the given axis itself, not the length
+;;   of the lines within the axis.)
+(define (board-axis-length b axis)
+  (match axis
+    ['row    (board-height b)]
+    ['column (board-width b)]))
+
 ;; board-ref : board? natural? natural? -> tile?
 (define (board-ref b x y)
   (array-ref (array-ref (board-rows b) y) x))
@@ -145,6 +176,19 @@
     ['row (board-row b i)]
     ['column (board-column b i)]))
 
+;; board-columns : board? -> (arrayof tile-line?)
+(define (board-columns b)
+  (define width (board-width b))
+  (for/array #:length width
+             ([x (in-range width)])
+    (board-column b x)))
+
+;; board-axis : board? axis? -> (arrayof tile-line?)
+(define (board-axis b axis)
+  (match axis
+    ['row (board-rows b)]
+    ['column (board-columns b)]))
+
 ;; board-clear : board? -> board?
 (define (board-clear b)
   (make-board (board-width b) (board-height b)))
@@ -153,7 +197,21 @@
 ;; clues
 
 (define clue? exact-positive-integer?)
-(define line-clues? (listof clue?))
+(define single-line-clues? (listof clue?))
+
+(define mega-line-clues-chunk?
+  (or/c clue? ;; mega clue
+        (array/c single-line-clues?
+                 single-line-clues?)))
+(define mega-line-clues? (listof mega-line-clues-chunk?))
+
+(define line-clues-type? (or/c 'single 'mega))
+(struct line-clues (type clues) #:transparent)
+
+;; single-line-clues : single-line-clues? -> line-clues?
+(define (single-line-clues clues)
+  (line-clues 'single clues))
+
 (define axis-clues? (arrayof line-clues?))
 (struct board-clues
   (row-clues     ;; axis-clues?
@@ -163,19 +221,75 @@
 (module+ example
   (define clues-1
     (board-clues
-     #((1) (1 1) (2))
-     #((1) (1) (3))))
+     (array-map single-line-clues #((1) (1 1) (2)))
+     (array-map single-line-clues #((1) (1) (3)))))
 
   (define clues-2
     (board-clues
-     #((1) (3))
-     #(() (1) (2) (1)))))
+     (array-map single-line-clues #((1) (3)))
+     (array-map single-line-clues #(() (1) (2) (1))))))
 
-;; board-clues-line : clues? axis? natural? -> line-clues?
-(define (board-clues-line clues axis i)
+;; lines-clues-span : line-clues? -> (or/c 1 2)
+(define (lines-clues-span lc)
+  (match (line-clues-type lc)
+    ['single 1]
+    ['mega   2]))
+
+;; axis-clues? -> natural?
+(define (axis-clues-line-count lcs)
+  (for/sum ([lc (in-array lcs)])
+    (lines-clues-span lc)))
+
+;; line-index->axis-clue-index
+;;   : axis-clues? natural?
+;;  -> (or/c natural?
+;;           (array/c natural? (or/c 0 1)))
+(define/who (line-index->axis-clue-index clues i #:who [who who])
+  (define num-clues (array-length clues))
+  (let loop ([ci 0]
+             [j 0])
+    (cond
+      [(>= ci num-clues)
+       (raise-range-error who "axis clues" "" i clues 0 (sub1 j))]
+      [else
+       (define lc (array-ref clues ci))
+       (match (line-clues-type lc)
+         ['single
+          (if (= i j)
+              ci
+              (loop (add1 ci) (add1 j)))]
+         ['mega
+          (if (<= i (add1 j))
+              (array ci (- i j))
+              (loop (add1 ci) (+ j 2)))])])))
+
+(module+ test
+  (let ()
+    (define axis-clues (array (line-clues 'single '(1))
+                              (line-clues 'mega '(1))
+                              (line-clues 'mega '(1))))
+    (check-equal? (line-index->axis-clue-index axis-clues 0) 0)
+    (check-equal? (line-index->axis-clue-index axis-clues 1) (array 1 0))
+    (check-equal? (line-index->axis-clue-index axis-clues 2) (array 1 1))
+    (check-equal? (line-index->axis-clue-index axis-clues 3) (array 2 0))
+    (check-equal? (line-index->axis-clue-index axis-clues 4) (array 2 1))))
+
+;; board-clues-clues : board-clues? axis? -> axis-clues?
+(define (board-clues-axis clues axis)
   (match axis
-    ['row    (array-ref (board-clues-row-clues clues) i)]
-    ['column (array-ref (board-clues-column-clues clues) i)]))
+    ['row    (board-clues-row-clues clues)]
+    ['column (board-clues-column-clues clues)]))
+
+;; board-clues-line : board-clues? axis? natural?
+;;                 -> (or/c single-line-clues?
+;;                          (array/c mega-line-clues? (or/c 0 1)))
+(define/who (board-clues-line clues axis i)
+  (define axis-clues (board-clues-axis clues axis))
+  (match (line-index->axis-clue-index axis-clues i #:who who)
+    [(array ci which)
+     (array (line-clues-clues (array-ref axis-clues ci)) which)]
+    [ci
+     (line-clues-clues (array-ref axis-clues ci))]))
 
 (module+ test
   (check-equal? (board-clues-line clues-1 'row 0) '(1))
@@ -188,23 +302,24 @@
 ;; solved-line->clues : tile-line? -> line-clues?
 (define (solved-line->clues tiles)
   (define num-tiles (array-length tiles))
-  (let outer-loop ([i 0])
-    (if (< i num-tiles)
-        (match (array-ref tiles i)
-          ['full
-           (let inner-loop ([j (add1 i)])
-             (if (< j num-tiles)
-                 (match (array-ref tiles j)
-                   ['full (inner-loop (add1 j))]
-                   [_ (cons (- j i) (outer-loop j))])
-                 (list (- j i))))]
-          [_ (outer-loop (add1 i))])
-        '())))
+  (single-line-clues
+   (let outer-loop ([i 0])
+     (if (< i num-tiles)
+         (match (array-ref tiles i)
+           ['full
+            (let inner-loop ([j (add1 i)])
+              (if (< j num-tiles)
+                  (match (array-ref tiles j)
+                    ['full (inner-loop (add1 j))]
+                    [_ (cons (- j i) (outer-loop j))])
+                  (list (- j i))))]
+           [_ (outer-loop (add1 i))])
+         '()))))
 
 (module+ test
   (check-equal? (solved-line->clues
                  #(full cross full full cross cross full full full cross full))
-                '(1 2 3 1)))
+                (line-clues 'single '(1 2 3 1))))
 
 (define (solved-board->clues b)
   (define w (board-width b))
@@ -219,8 +334,9 @@
   (check-equal? (solved-board->clues
                  (board #(#(full  cross cross full)
                           #(cross full  full  cross))))
-                (board-clues #((1 1) (2))
-                             #((1) (1) (1) (1)))))
+                (board-clues
+                 (array-map single-line-clues #((1 1) (2)))
+                 (array-map single-line-clues #((1) (1) (1) (1))))))
 
 ;; -----------------------------------------------------------------------------
 ;; puzzle
@@ -232,13 +348,41 @@
 
 ;; clues->puzzle : board-clues? -> puzzle?
 (define (clues->puzzle clues)
-  (puzzle (make-board (array-length (board-clues-column-clues clues))
-                      (array-length (board-clues-row-clues clues)))
+  (puzzle (make-board (axis-clues-line-count (board-clues-column-clues clues))
+                      (axis-clues-line-count (board-clues-row-clues clues)))
           clues))
 
 ;; solved-board->puzzle : board? -> puzzle?
 (define (solved-board->puzzle b)
   (puzzle (board-clear b) (solved-board->clues b)))
+
+;; puzzle-axis-tiles+clues
+;;   : puzzle? axis?
+;;  -> (arrayof (or/c (array/c tile-line? single-line-clues?)
+;;                    (array/c tile-line? tile-line? multi-line-clues?)))
+;; 
+(define (puzzle-axis-tiles+clues pz axis)
+  (define board (puzzle-board pz))
+  (define clues (puzzle-clues pz))
+  (define lcs (board-clues-axis clues axis))
+
+  (define tiles+clues (make-vector (array-length lcs) #f))
+  (for/fold ([j 0])
+            ([(lc i) (in-indexed (in-array lcs))])
+    (match-define (line-clues type clues) lc)
+    (match type
+      ['single
+       (define t+c (array (board-line board axis j) clues))
+       (vector-set! tiles+clues i t+c)
+       (add1 j)]
+      ['mega
+       (define t+c (array (board-line board axis j)
+                          (board-line board axis (add1 j))
+                          clues))
+       (vector-set! tiles+clues i t+c)
+       (+ j 2)]))
+
+  (unsafe-vector*->array! tiles+clues))
 
 (module+ example
   (define puzzle-1 (puzzle board-1 clues-1))
@@ -247,60 +391,162 @@
   (define puzzle-s5-001
     (clues->puzzle
      (board-clues
-      #((1 1) (1 1 1) (5) (1) (3))
-      #((3) (1 1) (5) (1 1) (2)))))
+      (array-map single-line-clues #((1 1) (1 1 1) (5) (1) (3)))
+      (array-map single-line-clues #((3) (1 1) (5) (1 1) (2))))))
 
   (define puzzle-s5-016
     (clues->puzzle
      (board-clues
-      #((1 2) (1 2) (2) (3) (2 2 1) (2 2 3) (1 2 2 1) (2 6) (1 2 1) (2 1))
-      #((4) (1 1) (1 1) (4) (1 1 1) (1 1 1 1) (1 1 3) (1 1 5) (6 1) (3 2 1)))))
+      (array-map single-line-clues #((1 2) (1 2) (2) (3) (2 2 1) (2 2 3) (1 2 2 1) (2 6) (1 2 1) (2 1)))
+      (array-map single-line-clues #((4) (1 1) (1 1) (4) (1 1 1) (1 1 1 1) (1 1 3) (1 1 5) (6 1) (3 2 1))))))
 
   (define puzzle-s5-031
     (clues->puzzle
      (board-clues
-      #((2) (1 2) (2 1 3) (2 4) (1 7) (6) (1 4 1) (3 2 2) (5 3) (7))
-      #((2 3) (2 2) (2 2 3) (1 4 2) (1 5 2) (1 5 1) (1 5 1) (1 2 2) (1 1 3) (1 3)))))
+      (array-map single-line-clues #((2) (1 2) (2 1 3) (2 4) (1 7) (6) (1 4 1) (3 2 2) (5 3) (7)))
+      (array-map single-line-clues #((2 3) (2 2) (2 2 3) (1 4 2) (1 5 2) (1 5 1) (1 5 1) (1 2 2) (1 1 3) (1 3))))))
 
   (define puzzle-s5-061
     (clues->puzzle
      (board-clues
-      #((6 4) (5 4) (4 4) (7) (6) (1 1 1) (1 1 1 1) (1 1 1 1) (1 3) (1 1 1) (1 1) (1 1 1) (1 1) (3) (1 3))
-      #((1) (1) (2) (3) (4 2) (6 5 1) (4 2 1) (3 2 1 2) (3 3 2) (5 5 1) (4 2) (3) (2) (1) (1)))))
+      (array-map single-line-clues #((6 4) (5 4) (4 4) (7) (6) (1 1 1) (1 1 1 1) (1 1 1 1) (1 3) (1 1 1) (1 1) (1 1 1) (1 1) (3) (1 3)))
+      (array-map single-line-clues #((1) (1) (2) (3) (4 2) (6 5 1) (4 2 1) (3 2 1 2) (3 3 2) (5 5 1) (4 2) (3) (2) (1) (1))))))
 
   (define puzzle-s5-135
     (clues->puzzle
      (board-clues
-      #((3 4) (1 3 2) (2 3 1 1 1) (4 3 3) (1 1 1 1 1) (1 3 1) (1 3 1 1 1) (1 1 1 1) (4 1 1 1) (6 3) (3 7) (12) (9 1) (1 2 2) (8 3))
-      #((3 4) (1 2 3 1) (1 1 1 3 1) (3 2 2 1) (3 4 2 1) (2 2 5 1) (1 1 4 1) (3 7 1) (1 2 4 1) (1 2 2 1) (1 2 3 1) (1 3 6) (1 1 1 1 1) (2 2 1 2) (2 2 2)))))
+      (array-map single-line-clues #((3 4) (1 3 2) (2 3 1 1 1) (4 3 3) (1 1 1 1 1) (1 3 1) (1 3 1 1 1) (1 1 1 1) (4 1 1 1) (6 3) (3 7) (12) (9 1) (1 2 2) (8 3)))
+      (array-map single-line-clues #((3 4) (1 2 3 1) (1 1 1 3 1) (3 2 2 1) (3 4 2 1) (2 2 5 1) (1 1 4 1) (3 7 1) (1 2 4 1) (1 2 2 1) (1 2 3 1) (1 3 6) (1 1 1 1 1) (2 2 1 2) (2 2 2))))))
 
   (define puzzle-s5-137
     (clues->puzzle
      (board-clues
-      #((8 9) (3 8) (1 3 6) (6 1 4) (5 1 2) (5 3 1) (5 4) (5 5) (5 6) (6 6) (6 6) (5 7) (1 3 6 1) (4 2) (8 6))
-      #((1 9 3) (1 8 2) (1 9 2) (1 10 2) (12 1) (4 4 1) (2 2 1) (1 1 1) () (1) (1) (1 2) (2 3) (2 1 5) (3 9 1) (3 7 1) (4 7 1) (4 6 1) (5 3 2) (6 3)))))
+      (array-map single-line-clues #((8 9) (3 8) (1 3 6) (6 1 4) (5 1 2) (5 3 1) (5 4) (5 5) (5 6) (6 6) (6 6) (5 7) (1 3 6 1) (4 2) (8 6)))
+      (array-map single-line-clues #((1 9 3) (1 8 2) (1 9 2) (1 10 2) (12 1) (4 4 1) (2 2 1) (1 1 1) () (1) (1) (1 2) (2 3) (2 1 5) (3 9 1) (3 7 1) (4 7 1) (4 6 1) (5 3 2) (6 3))))))
 
   (define puzzle-s5-146
     (clues->puzzle
      (board-clues
-      #((2 2) (1 1 1 11) (1 3 12) (1 3 3 7) (5 2 1 3 2) (2 1 3 1) (2 1 1 3 1 2) (5 5 2 1) (1 4 2 1 1 1) (5 1 1 1 2) (1 2 2 5) (1 5 4) (6 1) (1 1 5) (3 1 2))
-      #((1 1 1 2) (1 2 1 1 1) (1 1 2 1 1 1) (6 1 1) (3 3) (1 2 4) (1 3 1) (2 2 2 1) (4 1 1) (3 2 3) (5 2 2) (2 4 2) (2 4 4) (4 2 3 1) (4 1 1) (3 3 2 1) (3 2 2 1) (3 1 3 1) (3 1 4 2) (3 1 2 2)))))
+      (array-map single-line-clues #((2 2) (1 1 1 11) (1 3 12) (1 3 3 7) (5 2 1 3 2) (2 1 3 1) (2 1 1 3 1 2) (5 5 2 1) (1 4 2 1 1 1) (5 1 1 1 2) (1 2 2 5) (1 5 4) (6 1) (1 1 5) (3 1 2)))
+      (array-map single-line-clues #((1 1 1 2) (1 2 1 1 1) (1 1 2 1 1 1) (6 1 1) (3 3) (1 2 4) (1 3 1) (2 2 2 1) (4 1 1) (3 2 3) (5 2 2) (2 4 2) (2 4 4) (4 2 3 1) (4 1 1) (3 3 2 1) (3 2 2 1) (3 1 3 1) (3 1 4 2) (3 1 2 2))))))
 
   (define puzzle-s5-149
     (clues->puzzle
      (board-clues
-      #((1 3) (5) (2 2) (1 2 2 1) (2 2 3 2) (2 3 4 1) (6 1 1 2 2 1) (3 1 5 3) (1 6 4 2) (1 2 1 2) (1 1 3) (3 10) (2 1 2 2 1) (3 1 3) (1 2 2))
-      #((3 2) (2 2) (2 1 1) (2 2) (3 2) (2 1 3 1) (2 1 1) (2 1 3) (2 3 2) (9) (1 2 1) (1 2 3) (6 1 4) (1 4 1 2 1) (2 3 1 4) (4 1 1 2) (3 1 1) (3 1) (1 3) (1 3)))))
+      (array-map single-line-clues #((1 3) (5) (2 2) (1 2 2 1) (2 2 3 2) (2 3 4 1) (6 1 1 2 2 1) (3 1 5 3) (1 6 4 2) (1 2 1 2) (1 1 3) (3 10) (2 1 2 2 1) (3 1 3) (1 2 2)))
+      (array-map single-line-clues #((3 2) (2 2) (2 1 1) (2 2) (3 2) (2 1 3 1) (2 1 1) (2 1 3) (2 3 2) (9) (1 2 1) (1 2 3) (6 1 4) (1 4 1 2 1) (2 3 1 4) (4 1 1 2) (3 1 1) (3 1) (1 3) (1 3))))))
 
   (define puzzle-s5-150
     (clues->puzzle
      (board-clues
-      #((2 3 2 1) (3 1 2 2 1) (1 1 1 4 1 2) (1 3 1 2 1 1 2 1) (2 2 1 1 1 1 1) (3 1 1 2 2 1) (2 3 4 1 1) (4 6 1) (1 3 4 1) (3 1 3 2) (2 2 1 1) (3 1 2) (2 3 1) (5 1 1) (6 2))
-      #((1 1) (3 1) (2 2) (1 1) (4 1) (1 6 2) (1 1 1 1 2 2) (1 1 1 5 2) (1 4 1) (2 2 1 1 2 1) (1 1 1 4 1) (1 1 2 2) (3 5 1) (3 7 1) (1 2 4 2) (1 2) (1 2 3 5) (1 2 2 1 1) (1 3 2) (2)))))
+      (array-map single-line-clues #((2 3 2 1) (3 1 2 2 1) (1 1 1 4 1 2) (1 3 1 2 1 1 2 1) (2 2 1 1 1 1 1) (3 1 1 2 2 1) (2 3 4 1 1) (4 6 1) (1 3 4 1) (3 1 3 2) (2 2 1 1) (3 1 2) (2 3 1) (5 1 1) (6 2)))
+      (array-map single-line-clues #((1 1) (3 1) (2 2) (1 1) (4 1) (1 6 2) (1 1 1 1 2 2) (1 1 1 5 2) (1 4 1) (2 2 1 1 2 1) (1 1 1 4 1) (1 1 2 2) (3 5 1) (3 7 1) (1 2 4 2) (1 2) (1 2 3 5) (1 2 2 1 1) (1 3 2) (2))))))
+
+  (define puzzle-s5-m001
+    (clues->puzzle
+     (board-clues
+      (array (line-clues 'single '(2 2))
+             (line-clues 'single '(1 1))
+             (line-clues 'mega '(#[() (1)] 3))
+             (line-clues 'single '(2 2)))
+      (array-map single-line-clues #((2 2) (1 1) () (1 3) (2 2))))))
+
+  (define puzzle-s5-m016
+    (clues->puzzle
+     (board-clues
+      (array (line-clues 'single '(1))
+             (line-clues 'mega '(3 4))
+             (line-clues 'single '(7))
+             (line-clues 'single '(1))
+             (line-clues 'mega '(4 5 #[(1 1) ()]))
+             (line-clues 'single '(1 7))
+             (line-clues 'single '(2 4))
+             (line-clues 'single '(3)))
+      (array (line-clues 'single '(2 1))
+             (line-clues 'single '(1 1 1))
+             (line-clues 'single '(1 2))
+             (line-clues 'single '(2 3))
+             (line-clues 'single '(3 2))
+             (line-clues 'mega '(#[(1) ()] 3 6))
+             (line-clues 'single '(4 1 2))
+             (line-clues 'mega '(3 #[() (1)] 4))))))
+
+  (define puzzle-s5-m016/solved
+    (puzzle
+     (board #(#(cross cross cross cross cross cross cross full  cross cross)
+              #(cross cross cross cross full  full  cross full  cross cross)
+              #(cross cross cross cross full  cross full  full  full  cross)
+              #(cross cross cross full  full  full  full  full  full  full )
+              #(cross cross cross full  cross cross cross cross cross cross)
+              #(full  full  full  cross cross full  cross full  cross full )
+              #(full  cross cross full  full  full  full  cross cross cross)
+              #(cross full  cross full  full  full  full  full  full  full )
+              #(cross cross full  full  cross cross full  full  full  full )
+              #(full  full  full  cross cross cross cross cross cross cross)))
+     (puzzle-clues puzzle-s5-m016)))
+
+  (define puzzle-s5-m076
+    (clues->puzzle
+     (board-clues
+      (array (line-clues 'single '(4))
+             (line-clues 'single '(2 2))
+             (line-clues 'mega '(5 3))
+             (line-clues 'mega '(7 #[() (1)] 5))
+             (line-clues 'single '(8 5))
+             (line-clues 'mega '(#[(1) (1)] 6 #[(1) (3)]))
+             (line-clues 'single '(4 2 2))
+             (line-clues 'single '(3 5 1))
+             (line-clues 'single '(1 3 2))
+             (line-clues 'single '(2 2))
+             (line-clues 'single '(3 2))
+             (line-clues 'single '(6)))
+      (array (line-clues 'single '(5))
+             (line-clues 'single '(4 1 2))
+             (line-clues 'single '(8 2))
+             (line-clues 'single '(1 7))
+             (line-clues 'single '(1 7))
+             (line-clues 'mega '(4 #[() (1)] 4 4))
+             (line-clues 'single '(5 2 2))
+             (line-clues 'mega '(#[(2) (1)] 7 2))
+             (line-clues 'single '(1 4 1))
+             (line-clues 'single '(1 2 2))
+             (line-clues 'mega '(2 4))
+             (line-clues 'single '(1 2))))))
+
+  (define puzzle-s5-m106
+    (clues->puzzle
+     (board-clues
+      (array (line-clues 'single '(1 3))
+             (line-clues 'single '(2 1))
+             (line-clues 'mega '(#[(4) (2)] 4))
+             (line-clues 'single '(2 1 2))
+             (line-clues 'single '(1 2 2 1))
+             (line-clues 'single '(1 9))
+             (line-clues 'single '(1 5 4))
+             (line-clues 'single '(1 9 1))
+             (line-clues 'mega '(#[() (1)] 6 #[(5) (2)] 3))
+             (line-clues 'single '(1 2 6 1))
+             (line-clues 'single '(1 1 3 2))
+             (line-clues 'single '(3 2 2))
+             (line-clues 'single '(2 3)))
+      (array (line-clues 'single '(2))
+             (line-clues 'single '(2 1 1))
+             (line-clues 'single '(2 2 1 1))
+             (line-clues 'single '(1 3 1))
+             (line-clues 'single '(1 2 1 3))
+             (line-clues 'single '(1 3 1 1))
+             (line-clues 'mega '(2 9 2))
+             (line-clues 'single '(1 5 3))
+             (line-clues 'mega '(#[(1) (1)] 10 5))
+             (line-clues 'single '(3 4 2))
+             (line-clues 'single '(2 1 3 1 1))
+             (line-clues 'single '(1 1 2 1 4))
+             (line-clues 'single '(2 2 3 3))))))
 
   (define all-puzzles
     (list (cons "Test 1" puzzle-1)
           (cons "Test 2" puzzle-2)
+
           (cons "S5 001" puzzle-s5-001)
           (cons "S5 016" puzzle-s5-016)
           (cons "S5 031" puzzle-s5-031)
@@ -309,7 +555,13 @@
           (cons "S5 137" puzzle-s5-137)
           (cons "S5 146" puzzle-s5-146)
           (cons "S5 149" puzzle-s5-149)
-          (cons "S5 150" puzzle-s5-150)))
+          (cons "S5 150" puzzle-s5-150)
+
+          (cons "S5 M001" puzzle-s5-m001)
+          (cons "S5 M016" puzzle-s5-m016)
+          (cons "S5 M016 (solved)" puzzle-s5-m016/solved)
+          (cons "S5 M076" puzzle-s5-m076)
+          (cons "S5 M106" puzzle-s5-m106)))
 
   (define all-puzzle-names (map car all-puzzles))
   (define all-puzzles-hash (make-immutable-hash all-puzzles))
