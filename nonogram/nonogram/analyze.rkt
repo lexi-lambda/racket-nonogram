@@ -1465,13 +1465,6 @@
                                 #f))
            (match-define (array min-filled-i-0 min-filled-i-1)
              (earliest-reachable/mega clue-range line-aff first-full-i max-left))
-           #;((current-print) (list 'behind
-                                    (array 'clue-i clue-i)
-                                    (array 'clue clue)
-                                    (array 'clue-range clue-range)
-                                    (array 'line-aff line-aff)
-                                    (array 'first-full-i first-full-i)
-                                    (array 'max-left max-left)))
            (clue-tiles-fill-line! clue-i 0 'cross 0 min-filled-i-0)
            (clue-tiles-fill-line! clue-i 1 'cross 0 min-filled-i-1))
 
@@ -1554,11 +1547,6 @@
           (raise-contradiction "no space for clue"))
 
         (define first-full-i (and~> first-full-mi mega-index-tile))
-        #;((current-print) (list (array 'clue-i clue-i)
-                               (array 'clue clue)
-                               (array 'clue-range clue-range)
-                               (array 'first-full-mi first-full-mi)
-                               (array 'last-hole-mi last-hole-mi)))
         (match-define (cons _ start-bound)
           (find-latest-tightest-placement-end+start/mega clue-range last-hole-mi clue))
         (define start-upper-bounds (mega-placement-start-bound->line-upper-bounds start-bound))
@@ -1575,14 +1563,6 @@
 
         (define cross-start-i-0 (get-cross-start 0))
         (define cross-start-i-1 (get-cross-start 1))
-        #;((current-print) (list (array 'clue-i clue-i)
-                               (array 'clue clue)
-                               (array 'clue-range clue-range)
-                               (array 'tightest-placement (find-latest-tightest-placement-end+start/mega clue-range last-hole-mi clue))
-                               (array 'start-upper-bounds start-upper-bounds)
-                               (array 'first-full-i first-full-i)
-                               (array 'cross-start-i-0 cross-start-i-0)
-                               (array 'cross-start-i-1 cross-start-i-1)))
         (for ([prev-clue-i (in-list prev-clue-is)])
           (clue-tiles-fill-line! prev-clue-i 0 'cross cross-start-i-0
                                  #:contradiction-reason contradiction-reason)
@@ -1657,16 +1637,13 @@
             [(array line-0 line-1)
              (for ([j (in-range (array-length line-0))])
                (define clue-i (single-line-index i 0 j))
-               #;((current-print) (list clue-i clue-ranges))
                (gain-information-from-self/single clue-i)
                (propagate-information-to-neighbors/single clue-i))
              (for ([j (in-range (array-length line-1))])
                (define clue-i (single-line-index i 1 j))
-               #;((current-print) (list clue-i clue-ranges))
                (gain-information-from-self/single clue-i)
                (propagate-information-to-neighbors/single clue-i))]
             [_
-             #;((current-print) (list i clue-ranges))
              (gain-information-from-self/mega i)
              (propagate-information-to-neighbors/mega i)]))
         (propagate-information-from-user)
