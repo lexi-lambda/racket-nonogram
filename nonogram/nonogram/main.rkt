@@ -34,6 +34,15 @@
    alt-down?)    ; Option on macOS
   #:transparent)
 
+(define (event->modifier-keys event)
+  (modifier-keys
+   (send event get-shift-down)
+   (send event get-control-down)
+   (match (system-type 'os)
+     ['macosx (send event get-alt-down)]
+     [_       (or (send event get-alt-down)
+                  (send event get-meta-down))])))
+
 ;; drag-mode? board? natural? natural? -> board?
 (define (on-mouse-drag mode old-board tile-x tile-y)
   (define old-tile (board-ref old-board tile-x tile-y))
@@ -104,6 +113,31 @@
                      [board-analysis new-board-analysis])])]
     [_ wld2]))
 
+;; on-keyboard-event : world? (or/c 'press 'release) (or/c char? key-code-symbol?) modifier-keys? -> world?
+(define (on-keyboard-event wld event-type key-code modifiers)
+  (define timing-end (timing-start 'on-keyboard-event))
+  (match event-type
+    ['press
+     (define old-puzzle (world-puzzle wld))
+     (define new-puzzle
+       (match key-code
+         ['f1 (solve-puzzle-axis old-puzzle 'row)]
+         ['f2 (solve-puzzle-axis old-puzzle 'column)]
+         ['f3 (solve-puzzle old-puzzle)]
+         ['f12
+          (struct-copy puzzle old-puzzle
+                       [board (board-clear (puzzle-board old-puzzle))])]
+         [_ old-puzzle]))
+     (cond
+       [(equal? old-puzzle new-puzzle) wld]
+       [else
+        (define new-board-analysis (analyze-puzzle new-puzzle))
+        (timing-end)
+        (struct-copy world wld
+                     [puzzle new-puzzle]
+                     [board-analysis new-board-analysis])])]
+    [_ wld]))
+
 ;; -----------------------------------------------------------------------------
 
 (define (run initial-puzzle)
@@ -149,21 +183,28 @@
            (define tile-point (send puzzle-renderer get-tile-at
                                     (tf* tf:canvas-to-render location)))
            (when (or tile-point (memq event-type '(left-up middle-up right-up)))
-             (define modifiers (modifier-keys
-                                (send event get-shift-down)
-                                (send event get-control-down)
-                                (match (system-type 'os)
-                                  ['macosx (send event get-alt-down)]
-                                  [_       (or (send event get-alt-down)
-                                               (send event get-meta-down))])))
-             (define new-wld (on-mouse-event wld
-                                             event-type
-                                             modifiers
-                                             (and~> tile-point point-x)
-                                             (and~> tile-point point-y)))
-             (unless (equal? wld new-wld)
-               (set! wld new-wld)
-               (set! needs-refresh? #t)))))
+             (set-world!
+              (on-mouse-event wld
+                              event-type
+                              (event->modifier-keys event)
+                              (and~> tile-point point-x)
+                              (and~> tile-point point-y))))))
+
+       (define/override (on-char event)
+         (define-values [event-type key-code]
+           (match (send event get-key-code)
+             ['release (values 'release (send event get-key-release-code))]
+             [key-code (values 'press key-code)]))
+         (set-world!
+          (on-keyboard-event wld
+                             event-type
+                             key-code
+                             (event->modifier-keys event))))
+
+       (define/private (set-world! new-wld)
+         (unless (equal? wld new-wld)
+           (set! wld new-wld)
+           (set! needs-refresh? #t)))
 
        (define/private (update-renderer!)
          (define backing-scale (send (get-dc) get-backing-scale))
@@ -234,6 +275,7 @@
          [notify-callback (λ () (send canvas do-refresh))]))
 
   (send frame show #t)
+  (send canvas focus)
   (yield 'wait)
   (void))
 

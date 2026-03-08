@@ -28,6 +28,8 @@
 
 (provide (contract-out
           [axis? flat-contract?]
+          [axis-opposite (-> axis? axis?)]
+
           [tile? flat-contract?]
           [mega-line-offset? flat-contract?]
           [tile-line? flat-contract?]
@@ -43,6 +45,9 @@
           [board-row (-> board? natural? tile-line?)]
           [board-column (-> board? natural? tile-line?)]
           [board-line (-> board? axis? natural? tile-line?)]
+          [board-columns (-> board? (arrayof tile-line?))]
+          [board-axis (-> board? axis? (arrayof tile-line?))]
+          [lines->board (-> (arrayof tile-line?) axis? board?)]
           [board-clear (-> board? board?)]
 
           [clue? flat-contract?]
@@ -74,11 +79,8 @@
                           [clues board-clues?]))
           [clues->puzzle (-> board-clues? puzzle?)]
           [solved-board->puzzle (-> board? puzzle?)]
-          [puzzle-axis-tiles+clues
-           (-> puzzle?
-               axis?
-               (arrayof (or/c (array/c tile-line? single-line-clues?)
-                              (array/c tile-line? tile-line? mega-line-clues?))))]
+          [puzzle-axis-clues+lines
+           (-> puzzle? axis? (arrayof (cons/c line-clues? (or/c tile-line? mega-tile-line?))))]
 
           [parse-puzzle-nonograms.com-clues (-> string? natural? board-clues?)]
           [parse-nonograms.org-solution (-> string? board?)]))
@@ -87,6 +89,11 @@
 
 (define axis? (or/c 'row 'column))
 (define tile? (or/c 'empty 'full 'cross 'mark))
+
+(define (axis-opposite axis)
+  (match axis
+    ['row 'column]
+    ['column 'row]))
 
 (define mega-line-offset? (or/c 0 1))
 
@@ -188,11 +195,28 @@
              ([x (in-range width)])
     (board-column b x)))
 
+;; columns->board : (arrayof tile-line?) -> board?
+(define (columns->board cols)
+  (define width (array-length cols))
+  (define height (if (zero? width)
+                     0
+                     (array-length (array-ref cols 0))))
+  (board
+   (for/array #:length height ([y (in-range height)])
+     (for/array #:length width ([x (in-range width)])
+       (array-ref (array-ref cols x) y)))))
+
 ;; board-axis : board? axis? -> (arrayof tile-line?)
 (define (board-axis b axis)
   (match axis
     ['row (board-rows b)]
     ['column (board-columns b)]))
+
+;; lines->board : (arrayof tile-line?) axis? -> board?
+(define (lines->board lines axis)
+  (match axis
+    ['row (board lines)]
+    ['column (columns->board lines)]))
 
 ;; board-clear : board? -> board?
 (define (board-clear b)
@@ -362,32 +386,25 @@
   (puzzle (board-clear b) (solved-board->clues b)))
 
 ;; puzzle-axis-tiles+clues
-;;   : puzzle? axis?
-;;  -> (arrayof (or/c (array/c tile-line? single-line-clues?)
-;;                    (array/c tile-line? tile-line? multi-line-clues?)))
-;; 
-(define (puzzle-axis-tiles+clues pz axis)
+;;  : puzzle? axis?
+;; -> (arrayof (cons/c line-clues? (or/c tile-line? mega-tile-line?)))
+(define (puzzle-axis-clues+lines pz axis)
   (define board (puzzle-board pz))
-  (define clues (puzzle-clues pz))
-  (define lcs (board-clues-axis clues axis))
-
-  (define tiles+clues (make-vector (array-length lcs) #f))
+  (define lcs (board-clues-axis (puzzle-clues pz) axis))
+  (define lcs+ls (make-vector (array-length lcs) #f))
   (for/fold ([j 0])
             ([(lc i) (in-indexed (in-array lcs))])
-    (match-define (line-clues type clues) lc)
-    (match type
+    (match (line-clues-type lc)
       ['single
-       (define t+c (array (board-line board axis j) clues))
-       (vector-set! tiles+clues i t+c)
+       (define lc+l (cons lc (board-line board axis j)))
+       (vector-set! lcs+ls i lc+l)
        (add1 j)]
       ['mega
-       (define t+c (array (board-line board axis j)
-                          (board-line board axis (add1 j))
-                          clues))
-       (vector-set! tiles+clues i t+c)
+       (define lc+l (cons lc (array (board-line board axis j)
+                                    (board-line board axis (add1 j)))))
+       (vector-set! lcs+ls i lc+l)
        (+ j 2)]))
-
-  (unsafe-vector*->array! tiles+clues))
+  (unsafe-vector*->array! lcs+ls))
 
 (module+ example
   (define puzzle-1 (puzzle board-1 clues-1))

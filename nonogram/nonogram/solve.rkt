@@ -1,7 +1,9 @@
 #lang racket/base
 
 (require racket/contract
+         racket/list
          racket/match
+         threading
          "array.rkt"
          "core.rkt"
          "geometry.rkt"
@@ -22,21 +24,24 @@
 
          (contract-out
           [analyze-puzzle (-> puzzle? board-analysis?)]
-          [reanalyze-lines-at (-> puzzle? board-analysis? integer-point? board-analysis?)]))
+          [reanalyze-lines-at (-> puzzle? board-analysis? integer-point? board-analysis?)]
+
+          [solve-puzzle-axis (-> puzzle? axis? puzzle?)]
+          [solve-puzzle (-> puzzle? puzzle?)]))
 
 ;; -----------------------------------------------------------------------------
 
 ;; analyze-puzzle : puzzle? -> board-analysis?
 (define (analyze-puzzle pp)
   (define (do-axis axis)
-    (define tss+css (puzzle-axis-tiles+clues pp axis))
-    (for/array #:length (array-length tss+css)
-               ([tiles+clues (in-array tss+css)])
-      (match tiles+clues
-        [(array tile-line clue-line)
+    (define lcs+ls (puzzle-axis-clues+lines pp axis))
+    (for/array #:length (array-length lcs+ls)
+               ([lc+l (in-array lcs+ls)])
+      (match lc+l
+        [(cons (line-clues 'single clue-line) tile-line)
          (analyze-line clue-line tile-line)]
-        [(array tile-line-1 tile-line-2 clue-line)
-         (analyze-line/mega clue-line (array tile-line-1 tile-line-2))])))
+        [(cons (line-clues 'mega clue-line) mega-tile-line)
+         (analyze-line/mega clue-line mega-tile-line)])))
 
   (board-analysis
    (do-axis 'row)
@@ -78,3 +83,28 @@
   (board-analysis
    (reanalyze-line-at new-pz old-row-analyses 'row y)
    (reanalyze-line-at new-pz old-column-analyses 'column x)))
+
+;; -----------------------------------------------------------------------------
+
+;; solve-puzzle-axis : puzzle? axis? -> puzzle?
+(define (solve-puzzle-axis pz axis)
+  (define lcs+ls (puzzle-axis-clues+lines pz axis))
+  (define new-board
+    (~> (for/list ([lc+l (in-array lcs+ls)])
+          (match lc+l
+            [(cons (line-clues 'single clue-line) tile-line)
+             (list (solve-line clue-line tile-line))]
+            [(cons (line-clues 'mega clue-line) mega-tile-line)
+             (array->list (solve-line/mega clue-line mega-tile-line))]))
+        append*
+        list->array
+        (lines->board axis)))
+  (struct-copy puzzle pz [board new-board]))
+
+;; solve-puzzle : puzzle? -> puzzle?
+(define (solve-puzzle pz)
+  (let loop ([old-pz pz])
+    (define new-pz (solve-puzzle-axis (solve-puzzle-axis old-pz 'row) 'column))
+    (if (equal? old-pz new-pz)
+        old-pz
+        (loop new-pz))))
