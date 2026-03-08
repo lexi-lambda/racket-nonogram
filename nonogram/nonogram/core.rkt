@@ -29,6 +29,7 @@
 (provide (contract-out
           [axis? flat-contract?]
           [tile? flat-contract?]
+          [mega-line-offset? flat-contract?]
           [tile-line? flat-contract?]
 
           (struct board ([rows (arrayof tile-line?)]))
@@ -58,13 +59,13 @@
           [line-index->axis-clue-index (-> axis-clues?
                                            natural?
                                            (or/c natural?
-                                                 (array/c natural? (or/c 0 1))))]
+                                                 (array/c natural? mega-line-offset?)))]
           [board-clues-axis (-> board-clues? axis? axis-clues?)]
           [board-clues-line (-> board-clues?
                                 axis?
                                 natural?
                                 (or/c single-line-clues?
-                                      (array/c mega-line-clues? (or/c 0 1))))]
+                                      (array/c mega-line-clues? mega-line-offset?)))]
           [solved-line->clues (-> tile-line? line-clues?)]
           [solved-board->clues (-> board? board-clues?)]
 
@@ -85,6 +86,8 @@
 
 (define axis? (or/c 'row 'column))
 (define tile? (or/c 'empty 'full 'cross 'mark))
+
+(define mega-line-offset? (or/c 0 1))
 
 ;; A *tile line* is a row or a column of tiles.
 (define tile-line? (arrayof tile?))
@@ -243,7 +246,7 @@
 ;; line-index->axis-clue-index
 ;;   : axis-clues? natural?
 ;;  -> (or/c natural?
-;;           (array/c natural? (or/c 0 1)))
+;;           (array/c natural? mega-line-offset?))
 (define/who (line-index->axis-clue-index clues i #:who [who who])
   (define num-clues (array-length clues))
   (let loop ([ci 0]
@@ -282,7 +285,7 @@
 
 ;; board-clues-line : board-clues? axis? natural?
 ;;                 -> (or/c single-line-clues?
-;;                          (array/c mega-line-clues? (or/c 0 1)))
+;;                          (array/c mega-line-clues? mega-line-offset?))
 (define/who (board-clues-line clues axis i)
   (define axis-clues (board-clues-axis clues axis))
   (match (line-index->axis-clue-index axis-clues i #:who who)
