@@ -7,11 +7,11 @@
          racket/match
          threading
          toolbox/logging
-         "analyze.rkt"
          "core.rkt"
          "geometry.rkt"
          "logger.rkt"
-         "render.rkt")
+         "render.rkt"
+         "solve.rkt")
 
 ;; -----------------------------------------------------------------------------
 

@@ -14,83 +14,36 @@
 
 (provide (contract-out
           [analyze-line/mega
-           (-> mega-line-clues? mega-tile-line? line-clue-analysis?)]))
+           (-> mega-line-clues? mega-tile-line? line-clue-analysis?)]
+          [solve-line/mega (-> mega-line-clues? mega-tile-line? mega-tile-line?)]))
 
 ;; -----------------------------------------------------------------------------
 
-;; analyze-line/mega/simple
-;;   : mega-line-clues? (array/c tile-line? tile-line?) -> (or/c 'done 'error #f)
-(define (analyze-line/mega/simple clues tiles)
-  (define num-tiles (array-length (array-ref tiles 0)))
-  (define num-tiles/mega (* num-tiles 2))
+(struct mega-line-solution
+  (board-tiles
+   clue-tiless
+   line-clue-indexes)
+  #:transparent)
 
-  (let loop ([clues clues]
-             [mi 0])
-    (cond
-      [(< mi num-tiles/mega)
-       (match (tiles-ref/mega tiles mi)
-         ['full
-          (match clues
-            ['() 'error]
-            [(cons chunk clues)
-             (match chunk
-               ;; single line clues
-               [(and line-clues (array clues-0 clues-1))
-                (define line-i (mega-index-line mi))
-                (match (array-ref line-clues line-i)
-                  ['() #f]
-                  [(cons clue line-clues)
-                   (define start-i (mega-index-tile mi))
-                   (define end-i (+ start-i clue))
-                   (define line-tiles (array-ref tiles line-i))
-                   (define opposite-tiles (array-ref tiles (opposite line-i)))
-                   (and (<= end-i num-tiles)
-                        (for/and ([i (in-range start-i end-i)])
-                          (and (tile-full? (array-ref line-tiles i))
-                               (tile-hole? (array-ref opposite-tiles i))))
-                        (or (= end-i num-tiles)
-                            (tile-hole? (array-ref line-tiles end-i)))
-                        (let ()
-                          (define chunk* (match line-i
-                                           [0 (array line-clues clues-1)]
-                                           [1 (array clues-0 line-clues)]))
-                          (loop (if (and (empty? (array-ref chunk* 0))
-                                         (empty? (array-ref chunk* 1)))
-                                    clues
-                                    (cons chunk* clues))
-                                (opposite (mega-index line-i end-i)))))])]
-               ;; mega clue
-               [clue
-                (define-values [size end-mi]
-                  (connected-region-size+end/mega tiles mi tile-full?))
-                (and (= size clue)
-                     (connected-region-spans-both-lines? mi end-mi size)
-                     (loop clues (add1 end-mi)))])])]
-         [_ (loop clues (add1 mi))])]
-      [(empty? clues) 'done]
-      [else #f])))
+(define (clues-ref carr clue-i)
+  (match clue-i
+    [(single-line-index chunk-i line-i i)
+     (array-ref (array-ref (array-ref carr chunk-i) line-i) i)]
+    [chunk-i
+     (array-ref carr chunk-i)]))
 
-(module+ test
-  (check-equal? (analyze-line/mega/simple '(2) #(#(empty empty) #(empty empty))) #f)
-  (check-equal? (analyze-line/mega/simple '(2) #(#(full full) #(empty empty))) #f)
-  (check-equal? (analyze-line/mega/simple '(2) #(#(full empty) #(full empty))) 'done)
-  (check-equal? (analyze-line/mega/simple '(2) #(#(full empty full) #(full empty empty))) 'error)
+;; make-clue-tiles-ref/mega : mega-tiles/c -> (clue-index? mega-index? -> tile?)
+(define ((make-clue-tiles-ref/mega clue-tiless) clue-i mi)
+  (match clue-i
+    [(single-line-index _ line-i _)
+     (if (= line-i (mega-index-line mi))
+         (vector-ref (clues-ref clue-tiless clue-i) (mega-index-tile mi))
+         'cross)]
+    [_
+     (tiles-ref/mega (clues-ref clue-tiless clue-i) mi)]))
 
-  (check-equal? (analyze-line/mega/simple '(#[(1) (2)]) #(#(full  empty empty)
-                                                          #(empty full  full)))
-                'done)
-  (check-equal? (analyze-line/mega/simple '(#[(1) (2)]) #(#(empty empty full)
-                                                          #(full  full  empty)))
-                'done)
-  (check-equal? (analyze-line/mega/simple '(#[(1) ()] 3)
-                                          #(#(empty cross full)
-                                            #(empty full  full)))
-                #f))
-
-;; -----------------------------------------------------------------------------
-
-;; analyze-line/mega/fancy : mega-line-clues? (array/c tile-line? tile-line?) -> mega-line-analysis?
-(define (analyze-line/mega/fancy clues-lst user-tiles)
+;; do-solve-line : mega-line-clues? mega-tile-line? -> (or/c line-solution? 'error)
+(define (do-solve-line clues-lst user-tiles)
   (parameterize ([current-gained-information? #f])
     (define num-tiles (array-length (array-ref user-tiles 0)))
     (define num-tiles/mega (* num-tiles 2))
@@ -144,7 +97,7 @@
           [0 line-clue-indexes-0]
           [1 line-clue-indexes-1])))
 
-    (define clue-ranges
+    (define clue-tiless
       (for/array #:length num-chunks
                  ([chunk (in-array clues)])
         (match chunk
@@ -159,13 +112,6 @@
            (make-empty-tiles/mega)])))
 
     ;; -------------------------------------------------------------------------
-
-    (define (clues-ref carr clue-i)
-      (match clue-i
-        [(single-line-index chunk-i line-i i)
-         (array-ref (array-ref (array-ref carr chunk-i) line-i) i)]
-        [chunk-i
-         (array-ref carr chunk-i)]))
 
     ;; previous-clues : clue-index? -> (listof clue-index?)
     (define (previous-clues clue-i)
@@ -216,23 +162,15 @@
       (when (tile-cross? val)
         (define line-i (mega-index-line mi))
         (for ([clue-i (in-array (line-clue-indexes line-i))])
-          (define clue-range (clues-ref clue-ranges clue-i))
           (clue-tiles-set!/mega clue-i mi 'cross #:contradiction-reason contradiction-reason))))
 
     (define (board-fill!/mega val [start-mi 0] [end-mi num-tiles/mega]
                               #:contradiction-reason contradiction-reason)
       (for ([mi (in-range start-mi end-mi)])
-        (board-fill!/mega mi val #:contradiction-reason contradiction-reason)))
+        (board-set!/mega mi val #:contradiction-reason contradiction-reason)))
 
     ;; clue-tiles-ref/mega : clue-index? mega-index? -> tile?
-    (define (clue-tiles-ref/mega clue-i mi)
-      (match clue-i
-        [(single-line-index _ line-i _)
-         (if (= line-i (mega-index-line mi))
-             (vector-ref (clues-ref clue-ranges clue-i) (mega-index-tile mi))
-             'cross)]
-        [_
-         (tiles-ref/mega (clues-ref clue-ranges clue-i) mi)]))
+    (define clue-tiles-ref/mega (make-clue-tiles-ref/mega clue-tiless))
 
     ;; clue-tiles-set! : clue-index? natural? tile? -> void?
     (define/who (clue-tiles-set! clue-i i val #:contradiction-reason [contradiction-reason #f])
@@ -249,7 +187,7 @@
 
     ;; clue-tiles-set!/mega : clue-index? mega-index? tile? -> void?
     (define/who (clue-tiles-set!/mega clue-i mi val #:contradiction-reason [contradiction-reason #f])
-      (define clue-range (clues-ref clue-ranges clue-i))
+      (define clue-tiles (clues-ref clue-tiless clue-i))
       (match clue-i
         [(? single-line-index?)
          (define other-line? (not (= (single-line-index-line clue-i) (mega-index-line mi))))
@@ -259,9 +197,9 @@
               (raise-contradiction "filled tile on wrong line for single-line clue"))]
            [else
             (define tile-i (mega-index-tile mi))
-            (tiles-set!/track clue-range tile-i val #:contradiction-reason contradiction-reason)])]
+            (tiles-set!/track clue-tiles tile-i val #:contradiction-reason contradiction-reason)])]
         [_
-         (tiles-set!/mega clue-range mi val #:contradiction-reason contradiction-reason)])
+         (tiles-set!/mega clue-tiles mi val #:contradiction-reason contradiction-reason)])
 
       ; propagate filled tiles to board and cross other clues
       (when (tile-full? val)
@@ -304,11 +242,11 @@
       (match clue-i
         [(single-line-index _ line-i _)
          (and (= line-i (mega-index-line mi))
-              (neighbor-matching? (clues-ref clue-ranges clue-i)
+              (neighbor-matching? (clues-ref clue-tiless clue-i)
                                   (mega-index-tile mi)
                                   tile-full?))]
         [_
-         (neighbor-matching?/mega (clues-ref clue-ranges clue-i) mi tile-full?)]))
+         (neighbor-matching?/mega (clues-ref clue-tiless clue-i) mi tile-full?)]))
 
     ;; Returns the minimum number of tiles that may be filled to connect
     ;; `first-mi` to `last-mi`, including both endpoints.
@@ -337,23 +275,23 @@
 
     (define (gain-information-from-self/single clue-i)
       (define clue (clues-ref clues clue-i))
-      (define clue-range (clues-ref clue-ranges clue-i))
+      (define clue-tiles (clues-ref clue-tiless clue-i))
 
       ;; Cross out holes where the clue doesn’t fit.
       (let loop ([i 0])
-        (match (find-next-hole clue-range i)
+        (match (find-next-hole clue-tiles i)
           [#f (void)]
           [i
-           (define len (hole-length clue-range i))
+           (define len (hole-length clue-tiles i))
            (when (< len clue)
              (clue-tiles-fill! clue-i 'cross i (+ i len)))
            (loop (+ i len))]))
 
       ;; if any boxes are filled...
-      (match (find-first clue-range tile-full?)
+      (match (find-first clue-tiles tile-full?)
         [#f (void)]
         [first-full-i
-         (define last-full-i (find-last clue-range tile-full?))
+         (define last-full-i (find-last clue-tiles tile-full?))
 
          ;; ...fill in boxes between filled boxes
          (clue-tiles-fill! clue-i 'full first-full-i (add1 last-full-i)
@@ -366,22 +304,22 @@
                            #:contradiction-reason "clue is too long")
 
          ;; ...cross off all holes unreachable due to a separating cross
-         (define prev-cross-i (find-prev clue-range first-full-i tile-cross?))
+         (define prev-cross-i (find-prev clue-tiles first-full-i tile-cross?))
          (when prev-cross-i
            (clue-tiles-fill! clue-i 'cross 0 prev-cross-i))
-         (define next-cross-i (find-next clue-range first-full-i tile-cross?))
+         (define next-cross-i (find-next clue-tiles first-full-i tile-cross?))
          (when next-cross-i
            (clue-tiles-fill! clue-i 'cross next-cross-i))])
 
       ;; ensure there is a hole for the clue to actually go
-      (unless (find-next-hole clue-range 0)
+      (unless (find-next-hole clue-tiles 0)
         (raise-contradiction "no space for clue"))
 
       ;; if there is only one hole, fill boxes if possible
-      (match (find-singular-hole clue-range)
+      (match (find-singular-hole clue-tiles)
         [#f (void)]
         [i
-         (define len (hole-length clue-range i))
+         (define len (hole-length clue-tiles i))
          (cond
            [(odd? len)
             (define mid-tile (/ (sub1 len) 2))
@@ -408,14 +346,14 @@
 
     (define (gain-information-from-self/mega clue-i)
       (define clue (clues-ref clues clue-i))
-      (define clue-range (clues-ref clue-ranges clue-i))
+      (define clue-tiles (clues-ref clue-tiless clue-i))
 
       ;; Cross out holes where the clue doesn’t fit.
       (let loop ([mi 0])
-        (match (find-next-hole/mega clue-range mi)
+        (match (find-next-hole/mega clue-tiles mi)
           [#f (void)]
           [start-mi
-           (define-values [size end-mi] (hole-size+end/mega clue-range start-mi))
+           (define-values [size end-mi] (hole-size+end/mega clue-tiles start-mi))
            (when (or (< size clue)
                      (not (connected-region-spans-both-lines? start-mi end-mi size)))
              (clue-tiles-fill!/mega clue-i 'cross start-mi end-mi
@@ -425,7 +363,7 @@
       ;; Since we need to have at least one tile in each line, check if there is
       ;; only one valid location for a tile in each line and fill it if so.
       (for ([line-i (in-range 2)])
-        (define line-tiles (array-ref clue-range line-i))
+        (define line-tiles (array-ref clue-tiles line-i))
         (define line-first-hole-i (find-first line-tiles tile-hole?))
         (unless line-first-hole-i
           (raise-contradiction "mega clue cannot cover both lines"))
@@ -434,10 +372,10 @@
           (clue-tiles-set!/mega clue-i (mega-index line-i line-first-hole-i) 'full)))
 
       ;; If any boxes are filled...
-      (match (find-first/mega clue-range tile-full?)
+      (match (find-first/mega clue-tiles tile-full?)
         [#f (void)]
         [first-full-mi
-         (define last-full-mi (find-last/mega clue-range tile-full?))
+         (define last-full-mi (find-last/mega clue-tiles tile-full?))
          (define first-full-line-i (mega-index-line first-full-mi))
          (define first-full-i (mega-index-tile first-full-mi))
          (define last-full-line-i (mega-index-line last-full-mi))
@@ -471,8 +409,8 @@
                  [else
                   (define mi0 (mega-index 0 i))
                   (define mi1 (mega-index 1 i))
-                  (define tile-0 (tiles-ref/mega clue-range mi0))
-                  (define tile-1 (tiles-ref/mega clue-range mi1))
+                  (define tile-0 (tiles-ref/mega clue-tiles mi0))
+                  (define tile-1 (tiles-ref/mega clue-tiles mi1))
                   (match* {tile-0 tile-1}
                     [{_ 'cross}
                      (unless (= i first-full-i)
@@ -517,33 +455,33 @@
 
          ;; Cross out boxes behind us.
          (let ()
-           (define line-aff (if (tile-cross? (tiles-ref/mega clue-range (opposite first-full-mi)))
+           (define line-aff (if (tile-cross? (tiles-ref/mega clue-tiles (opposite first-full-mi)))
                                 first-full-line-i
                                 #f))
            (match-define (array min-filled-i-0 min-filled-i-1)
-             (earliest-reachable/mega clue-range line-aff first-full-i max-left))
+             (earliest-reachable/mega clue-tiles line-aff first-full-i max-left))
            (clue-tiles-fill-line! clue-i 0 'cross 0 min-filled-i-0)
            (clue-tiles-fill-line! clue-i 1 'cross 0 min-filled-i-1))
 
          ;; Cross out boxes in front of us.
          (let ()
-           (define line-aff (if (tile-cross? (tiles-ref/mega clue-range (opposite last-full-mi)))
+           (define line-aff (if (tile-cross? (tiles-ref/mega clue-tiles (opposite last-full-mi)))
                                 last-full-line-i
                                 #f))
            (match-define (array max-filled-i-0 max-filled-i-1)
-             (latest-reachable/mega clue-range line-aff last-full-i max-left))
+             (latest-reachable/mega clue-tiles line-aff last-full-i max-left))
            (clue-tiles-fill-line! clue-i 0 'cross (add1 max-filled-i-0))
            (clue-tiles-fill-line! clue-i 1 'cross (add1 max-filled-i-1)))])
 
       ;; Ensure there is a hole for the clue to actually go.
-      (unless (find-next-hole/mega clue-range 0)
+      (unless (find-next-hole/mega clue-tiles 0)
         (raise-contradiction "no space for clue")))
 
     ;; -------------------------------------------------------------------------
 
     (define (propagate-information-to-neighbors/single clue-i)
       (define clue (clues-ref clues clue-i))
-      (define clue-range (clues-ref clue-ranges clue-i))
+      (define clue-tiles (clues-ref clue-tiless clue-i))
       (define line-i (single-line-index-line clue-i))
       (define opposite-i (opposite line-i))
 
@@ -552,8 +490,8 @@
       ;; cross off tiles in previous clue’s range that would necessarily overlap with us
       (define prev-clue-is (previous-clues clue-i))
       (unless (empty? prev-clue-is)
-        (define first-full-i (find-first clue-range tile-full?))
-        (define last-hole-i (find-last clue-range tile-hole?))
+        (define first-full-i (find-first clue-tiles tile-full?))
+        (define last-hole-i (find-last clue-tiles tile-hole?))
         (unless last-hole-i
           (raise-contradiction "no space for clue"))
         (define start-i-upper-bound
@@ -572,8 +510,8 @@
       ;; cross off tiles in next clue’s range that would necessarily overlap with us
       (define next-clue-is (next-clues clue-i))
       (unless (empty? next-clue-is)
-        (define last-full-i (find-last clue-range tile-full?))
-        (define first-hole-i (find-first clue-range tile-hole?))
+        (define last-full-i (find-last clue-tiles tile-full?))
+        (define first-hole-i (find-first clue-tiles tile-hole?))
         (unless first-hole-i
           (raise-contradiction "no space for clue"))
         (define end-i-lower-bound
@@ -591,27 +529,27 @@
 
     (define (propagate-information-to-neighbors/mega clue-i)
       (define clue (clues-ref clues clue-i))
-      (define clue-range (clues-ref clue-ranges clue-i))
+      (define clue-tiles (clues-ref clue-tiless clue-i))
 
       (define contradiction-reason "not enough space between neighboring clues’ filled tiles")
 
       ;; cross off tiles in previous clue’s range that would necessarily overlap with us
       (define prev-clue-is (previous-clues clue-i))
       (unless (empty? prev-clue-is)
-        (define first-full-mi (find-first/mega clue-range tile-full?))
-        (define last-hole-mi (find-last/mega clue-range tile-hole?))
+        (define first-full-mi (find-first/mega clue-tiles tile-full?))
+        (define last-hole-mi (find-last/mega clue-tiles tile-hole?))
         (unless last-hole-mi
           (raise-contradiction "no space for clue"))
 
         (define first-full-i (and~> first-full-mi mega-index-tile))
         (match-define (cons _ start-bound)
-          (find-latest-tightest-placement-end+start/mega clue-range last-hole-mi clue))
+          (find-latest-tightest-placement-end+start/mega clue-tiles last-hole-mi clue))
         (define start-upper-bounds (mega-placement-start-bound->line-upper-bounds start-bound))
 
         (define (get-cross-start line-i)
           (define first-full-bound
             (if first-full-i
-                (if (tile-full? (tiles-ref/mega clue-range (mega-index line-i first-full-i)))
+                (if (tile-full? (tiles-ref/mega clue-tiles (mega-index line-i first-full-i)))
                     (sub1 first-full-i)
                     first-full-i)
                 num-tiles))
@@ -629,20 +567,20 @@
       ;; cross off tiles in next clue’s range that would necessarily overlap with us
       (define next-clue-is (next-clues clue-i))
       (unless (empty? next-clue-is)
-        (define last-full-mi (find-last/mega clue-range tile-full?))
-        (define first-hole-mi (find-first/mega clue-range tile-hole?))
+        (define last-full-mi (find-last/mega clue-tiles tile-full?))
+        (define first-hole-mi (find-first/mega clue-tiles tile-hole?))
         (unless first-hole-mi
           (raise-contradiction "no space for clue"))
 
         (define last-full-i (and~> last-full-mi mega-index-tile))
         (match-define (cons _ end-bound)
-          (find-earliest-tightest-placement-start+end/mega clue-range first-hole-mi clue))
+          (find-earliest-tightest-placement-start+end/mega clue-tiles first-hole-mi clue))
         (define end-lower-bounds (mega-placement-end-bound->line-lower-bounds end-bound))
 
         (define (get-cross-end line-i)
           (define last-full-bound
             (if last-full-i
-                (if (tile-full? (tiles-ref/mega clue-range (mega-index line-i last-full-i)))
+                (if (tile-full? (tiles-ref/mega clue-tiles (mega-index line-i last-full-i)))
                     (add1 last-full-i)
                     last-full-i)
                 0))
@@ -710,95 +648,196 @@
 
     ;; ---------------------------------------------------------------------------
 
-    ;; Like `extract-analysis` for single line clues, but also checks that all of
-    ;; the opposite tiles are crossed out.
-    (define (extract-analysis/single clue-i)
-      (define line-i (single-line-index-line clue-i))
-      (define clue-range (clues-ref clue-ranges clue-i))
-      (define first-full-i (find-first clue-range tile-full?))
-      (cond
-        [first-full-i
-         (define last-full-i (find-last clue-range tile-full?))
-         (define this-user-tiles (array-ref user-tiles line-i))
-         (define opposite-user-tiles (array-ref user-tiles (opposite line-i)))
-         (if (and (bounded-before? this-user-tiles first-full-i)
-                  (bounded-after? this-user-tiles last-full-i)
-                  (for/and ([i (in-inclusive-range first-full-i last-full-i)])
-                    (and (tile-full? (array-ref this-user-tiles i))
-                         (tile-cross? (array-ref opposite-user-tiles i)))))
-             'done
-             'pending)]
-        [else 'pending]))
-
-    (define (extract-analysis/mega clue-i)
-      (define clue-range (clues-ref clue-ranges clue-i))
-      (define first-full-mi (find-first/mega clue-range tile-full?))
-      (cond
-        [first-full-mi
-         (define last-full-mi (find-last/mega clue-range tile-full?))
-         (if (and (bounded-before?/mega user-tiles first-full-mi)
-                  (bounded-after?/mega user-tiles last-full-mi)
-                  (for/and ([mi (in-inclusive-range first-full-mi last-full-mi)])
-                    (define tile (tiles-ref/mega user-tiles mi))
-                    (or (tile-full? tile)
-                        (tile-cross? tile))))
-             'done
-             'pending)]
-        [else 'pending]))
-
     (with-handlers* ([exn:contradiction? (λ (exn) 'error)])
       (gain-information-to-fixed-point)
-      (for/list ([(chunk i) (in-indexed (in-array clues))])
-        (match chunk
-          [(array line-0 line-1)
-           (array (for/list ([j (in-range (array-length line-0))])
-                    (extract-analysis/single (single-line-index i 0 j)))
-                  (for/list ([j (in-range (array-length line-1))])
-                    (extract-analysis/single (single-line-index i 1 j))))]
-          [_
-           (extract-analysis/mega i)])))))
+      (mega-line-solution board-tiles clue-tiless line-clue-indexes))))
+
+;; -------------------------------------------------------------------------
+
+;; solve-line/mega : mega-line-clues? mega-tile-line? -> (or/c tile-line? 'error)
+(define (solve-line/mega clues tiles)
+  (match (do-solve-line clues tiles)
+    ['error 'error]
+    [(mega-line-solution board-tiles clue-tiless line-clue-indexes)
+     (define num-tiles (mega-tiles-length board-tiles))
+     (define clue-tiles-ref/mega (make-clue-tiles-ref/mega clue-tiless))
+     (for/array #:length 2 ([line-i (in-range 2)])
+       (for/array #:length num-tiles ([i (in-range num-tiles)])
+         (define mi (mega-index line-i i))
+         (match (tiles-ref/mega board-tiles mi)
+           ['empty
+            (if (for/and ([clue-i (in-array (line-clue-indexes line-i))])
+                  (eq? (clue-tiles-ref/mega clue-i mi) 'cross))
+                'cross
+                'empty)]
+           [tile tile])))]))
 
 (module+ test
-  (check-equal? (analyze-line/mega/fancy '(2) #(#(empty empty empty empty)
-                                                #(empty empty empty empty)))
-                '(pending))
-  (check-equal? (analyze-line/mega/fancy '(2) #(#(empty full empty empty)
-                                                #(empty full empty empty)))
-                '(pending))
-  (check-equal? (analyze-line/mega/fancy '(2) #(#(cross full cross empty)
-                                                #(cross full empty empty)))
-                '(pending))
-  (check-equal? (analyze-line/mega/fancy '(2) #(#(cross full empty empty)
-                                                #(empty full cross empty)))
-                '(pending))
-  (check-equal? (analyze-line/mega/fancy '(2) #(#(cross full cross empty)
-                                                #(empty full cross empty)))
-                '(pending))
-  (check-equal? (analyze-line/mega/fancy '(2) #(#(empty full cross empty)
-                                                #(cross full cross empty)))
-                '(pending))
-  (check-equal? (analyze-line/mega/fancy '(2) #(#(cross full  cross empty)
-                                                #(cross empty cross empty)))
-                '(pending))
-  (check-equal? (analyze-line/mega/fancy '(2) #(#(cross empty cross empty)
-                                                #(cross full  cross empty)))
-                '(pending))
-  (check-equal? (analyze-line/mega/fancy '(2) #(#(cross full cross empty)
-                                                #(cross full cross empty)))
-                '(done))
-  (check-equal? (analyze-line/mega/fancy '(2) #(#(cross cross cross cross)
-                                                #(empty empty empty empty)))
-                'error)
-  (check-equal? (analyze-line/mega/fancy '(2) #(#(full  full  empty empty)
-                                                #(empty empty empty empty)))
-                'error))
+  (check-equal? (solve-line/mega '(2 2 2) #(#(empty empty empty empty empty)
+                                            #(empty empty empty empty empty)))
+                #(#(full cross full cross full)
+                  #(full cross full cross full))))
 
 ;; -----------------------------------------------------------------------------
 
-;; analyze-line/mega : mega-line-clues? (array/c tile-line? tile-line?) -> line-clue-analysis?
+;; analyze-line/mega/simple : mega-line-clues? mega-tile-line? -> (or/c 'done 'error #f)
+(define (analyze-line/mega/simple clues tiles)
+  (define num-tiles (array-length (array-ref tiles 0)))
+  (define num-tiles/mega (* num-tiles 2))
+
+  (let loop ([clues clues]
+             [mi 0])
+    (cond
+      [(< mi num-tiles/mega)
+       (match (tiles-ref/mega tiles mi)
+         ['full
+          (match clues
+            ['() 'error]
+            [(cons chunk clues)
+             (match chunk
+               ;; single line clues
+               [(and line-clues (array clues-0 clues-1))
+                (define line-i (mega-index-line mi))
+                (match (array-ref line-clues line-i)
+                  ['() #f]
+                  [(cons clue line-clues)
+                   (define start-i (mega-index-tile mi))
+                   (define end-i (+ start-i clue))
+                   (define line-tiles (array-ref tiles line-i))
+                   (define opposite-tiles (array-ref tiles (opposite line-i)))
+                   (and (<= end-i num-tiles)
+                        (for/and ([i (in-range start-i end-i)])
+                          (and (tile-full? (array-ref line-tiles i))
+                               (tile-hole? (array-ref opposite-tiles i))))
+                        (or (= end-i num-tiles)
+                            (tile-hole? (array-ref line-tiles end-i)))
+                        (let ()
+                          (define chunk* (match line-i
+                                           [0 (array line-clues clues-1)]
+                                           [1 (array clues-0 line-clues)]))
+                          (loop (if (and (empty? (array-ref chunk* 0))
+                                         (empty? (array-ref chunk* 1)))
+                                    clues
+                                    (cons chunk* clues))
+                                (opposite (mega-index line-i end-i)))))])]
+               ;; mega clue
+               [clue
+                (define-values [size end-mi]
+                  (connected-region-size+end/mega tiles mi tile-full?))
+                (and (= size clue)
+                     (connected-region-spans-both-lines? mi end-mi size)
+                     (loop clues (add1 end-mi)))])])]
+         [_ (loop clues (add1 mi))])]
+      [(empty? clues) 'done]
+      [else #f])))
+
+(module+ test
+  (check-equal? (analyze-line/mega/simple '(2) #(#(empty empty) #(empty empty))) #f)
+  (check-equal? (analyze-line/mega/simple '(2) #(#(full full) #(empty empty))) #f)
+  (check-equal? (analyze-line/mega/simple '(2) #(#(full empty) #(full empty))) 'done)
+  (check-equal? (analyze-line/mega/simple '(2) #(#(full empty full) #(full empty empty))) 'error)
+
+  (check-equal? (analyze-line/mega/simple '(#[(1) (2)]) #(#(full  empty empty)
+                                                          #(empty full  full)))
+                'done)
+  (check-equal? (analyze-line/mega/simple '(#[(1) (2)]) #(#(empty empty full)
+                                                          #(full  full  empty)))
+                'done)
+  (check-equal? (analyze-line/mega/simple '(#[(1) ()] 3)
+                                          #(#(empty cross full)
+                                            #(empty full  full)))
+                #f))
+
+;; analyze-line/mega/solve : mega-line-clues? mega-tile-line? -> line-clue-analysis?
+(define (analyze-line/mega/solve clues user-tiles)
+  (match (do-solve-line clues user-tiles)
+    ['error 'error]
+    [(mega-line-solution _ clue-tiless _)
+     ;; Like `extract-analysis` for single line clues, but also checks that all of
+     ;; the opposite tiles are crossed out.
+     (define (extract-analysis/single clue-i)
+       (define line-i (single-line-index-line clue-i))
+       (define clue-tiles (clues-ref clue-tiless clue-i))
+       (define first-full-i (find-first clue-tiles tile-full?))
+       (cond
+         [first-full-i
+          (define last-full-i (find-last clue-tiles tile-full?))
+          (define this-user-tiles (array-ref user-tiles line-i))
+          (define opposite-user-tiles (array-ref user-tiles (opposite line-i)))
+          (if (and (bounded-before? this-user-tiles first-full-i)
+                   (bounded-after? this-user-tiles last-full-i)
+                   (for/and ([i (in-inclusive-range first-full-i last-full-i)])
+                     (and (tile-full? (array-ref this-user-tiles i))
+                          (tile-cross? (array-ref opposite-user-tiles i)))))
+              'done
+              'pending)]
+         [else 'pending]))
+
+     (define (extract-analysis/mega clue-i)
+       (define clue-tiles (clues-ref clue-tiless clue-i))
+       (define first-full-mi (find-first/mega clue-tiles tile-full?))
+       (cond
+         [first-full-mi
+          (define last-full-mi (find-last/mega clue-tiles tile-full?))
+          (if (and (bounded-before?/mega user-tiles first-full-mi)
+                   (bounded-after?/mega user-tiles last-full-mi)
+                   (for/and ([mi (in-inclusive-range first-full-mi last-full-mi)])
+                     (define tile (tiles-ref/mega user-tiles mi))
+                     (or (tile-full? tile)
+                         (tile-cross? tile))))
+              'done
+              'pending)]
+         [else 'pending]))
+
+     (for/list ([(chunk i) (in-indexed (in-list clues))])
+       (match chunk
+         [(array line-0 line-1)
+          (array (for/list ([j (in-range (length line-0))])
+                   (extract-analysis/single (single-line-index i 0 j)))
+                 (for/list ([j (in-range (length line-1))])
+                   (extract-analysis/single (single-line-index i 1 j))))]
+         [_
+          (extract-analysis/mega i)]))]))
+
+(module+ test
+  (check-equal? (analyze-line/mega/solve '(2) #(#(empty empty empty empty)
+                                                #(empty empty empty empty)))
+                '(pending))
+  (check-equal? (analyze-line/mega/solve '(2) #(#(empty full empty empty)
+                                                #(empty full empty empty)))
+                '(pending))
+  (check-equal? (analyze-line/mega/solve '(2) #(#(cross full cross empty)
+                                                #(cross full empty empty)))
+                '(pending))
+  (check-equal? (analyze-line/mega/solve '(2) #(#(cross full empty empty)
+                                                #(empty full cross empty)))
+                '(pending))
+  (check-equal? (analyze-line/mega/solve '(2) #(#(cross full cross empty)
+                                                #(empty full cross empty)))
+                '(pending))
+  (check-equal? (analyze-line/mega/solve '(2) #(#(empty full cross empty)
+                                                #(cross full cross empty)))
+                '(pending))
+  (check-equal? (analyze-line/mega/solve '(2) #(#(cross full  cross empty)
+                                                #(cross empty cross empty)))
+                '(pending))
+  (check-equal? (analyze-line/mega/solve '(2) #(#(cross empty cross empty)
+                                                #(cross full  cross empty)))
+                '(pending))
+  (check-equal? (analyze-line/mega/solve '(2) #(#(cross full cross empty)
+                                                #(cross full cross empty)))
+                '(done))
+  (check-equal? (analyze-line/mega/solve '(2) #(#(cross cross cross cross)
+                                                #(empty empty empty empty)))
+                'error)
+  (check-equal? (analyze-line/mega/solve '(2) #(#(full  full  empty empty)
+                                                #(empty empty empty empty)))
+                'error))
+
+;; analyze-line/mega : mega-line-clues? mega-tile-line? -> line-clue-analysis?
 (define (analyze-line/mega clues tiles)
   (or (analyze-line/mega/simple clues tiles)
-      (analyze-line/mega/fancy clues tiles)))
+      (analyze-line/mega/solve clues tiles)))
 
 (module+ test
   (check-equal? (analyze-line/mega '(#[() (1)] 3)

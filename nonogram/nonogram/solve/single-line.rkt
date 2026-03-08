@@ -5,109 +5,99 @@
          racket/match
          "../array.rkt"
          "../core.rkt"
-         "../vector.rkt"
          "core.rkt")
 
 (module+ test
   (require rackunit))
 
 (provide (contract-out
-          [analyze-line (-> single-line-clues? tile-line? line-clue-analysis?)]))
+          [analyze-line (-> single-line-clues? tile-line? line-clue-analysis?)]
+          [solve-line (-> single-line-clues? tile-line? (or/c tile-line? 'error))]))
 
 ;; -----------------------------------------------------------------------------
 
-;; analyze-line/simple : single-line-clues? tile-line? -> (or/c 'done 'error #f)
-;;
-;; The simple analyzer performs a quick, cheap check to see whether a given line
-;; is fully solved. A result of #f requires the use of the fancy analyzer.
-(define (analyze-line/simple clues tiles)
-  (define num-tiles (array-length tiles))
-  (let loop ([clues clues]
-             [i 0])
-    (cond
-      [(< i num-tiles)
-       (match (array-ref tiles i)
-         ['full
-          (match clues
-            ['() 'error]
-            [(cons clue clues)
-             (and (<= (+ i clue) num-tiles)
-                  (for/and ([j (in-range 1 clue)])
-                    (eq? (array-ref tiles (+ i j)) 'full))
-                  (or (= (+ i clue) num-tiles)
-                      (not (eq? (array-ref tiles (+ i clue)) 'full)))
-                  (loop clues (+ i clue 1)))])]
-         [_ (loop clues (add1 i))])]
-      [(empty? clues) 'done]
-      [else #f])))
+(struct line-solution (board-tiles clue-tiless) #:transparent)
 
-(module+ test
-  (check-equal? (analyze-line/simple '(1) #(empty empty empty)) #f)
-  (check-equal? (analyze-line/simple '(1) #(full empty empty)) 'done)
-  (check-equal? (analyze-line/simple '(1) #(empty full empty)) 'done)
-  (check-equal? (analyze-line/simple '(1) #(empty empty full)) 'done)
-  (check-equal? (analyze-line/simple '(1 1) #(full full empty)) #f)
-  (check-equal? (analyze-line/simple '(1 1) #(full empty full)) 'done)
-  (check-equal? (analyze-line/simple '(1) #(full empty full)) 'error))
-
-;; -----------------------------------------------------------------------------
-
-;; analyze-line/fancy : single-line-clues? tile-line? -> single-line-analysis?
-(define (analyze-line/fancy clues-lst user-tiles)
+;; do-solve-line : single-line-clues? tile-line? -> (or/c line-solution? 'error)
+(define (do-solve-line clues-lst user-tiles)
   (parameterize ([current-gained-information? #f])
     (define num-tiles (array-length user-tiles))
 
+    (define (make-empty-tiles)
+      (make-vector num-tiles 'empty))
+
     (define clues (list->array clues-lst))
     (define num-clues (array-length clues))
-    (define clue-ranges
+
+    (define board-tiles (make-empty-tiles))
+    (define clue-tiless
       (for/array #:length num-clues
                  ([i (in-range num-clues)])
-        (define clue-range (make-vector num-tiles 'empty))
+        (make-empty-tiles)))
 
-        ;; add crosses based on space needed by clues before/after
-        (define occupied-before
-          (for/sum ([clue (in-array clues 0 i)])
-            (add1 clue)))
-        (define occupied-after
-          (for/sum ([clue (in-array clues (add1 i))])
-            (add1 clue)))
-        (vector-fill! clue-range 'cross 0 occupied-before)
-        (vector-fill! clue-range 'cross (- num-tiles occupied-after))
+    ;; -------------------------------------------------------------------------
 
-        ;; propagate crosses from user tiles
-        (for ([(tile j) (in-indexed (in-array user-tiles))]
-              #:when (eq? tile 'cross))
-          (vector-set! clue-range j 'cross))
+    (define (board-set! i val
+                        #:contradiction-reason [reason (current-contradiction-reason)])
+      (tiles-set!/track board-tiles i val #:contradiction-reason reason)
 
-        clue-range))
+      ; propagage crosses to clues
+      (when (tile-cross? val)
+        (for ([clue-i (in-range num-clues)])
+          (clue-tiles-set! clue-i i 'cross #:contradiction-reason reason))))
+
+    (define (clue-tiles-set! clue-i i val
+                             #:contradiction-reason [reason (current-contradiction-reason)])
+      (define clue-tiles (array-ref clue-tiless clue-i))
+      (tiles-set!/track clue-tiles i val #:contradiction-reason reason)
+
+      ; propagate filled tiles to board and cross other clues
+      (when (tile-full? val)
+        (board-set! i 'full)
+        (for ([other-i (in-range num-clues)]
+              #:unless (equal? clue-i other-i))
+          (clue-tiles-set! other-i i 'cross
+                           #:contradiction-reason "tile claimed by multiple clues"))))
+
+    (define (clue-tiles-fill! clue-i val [start-i 0] [end-i num-tiles]
+                              #:contradiction-reason [contradiction-reason (current-contradiction-reason)])
+      (for ([i (in-range start-i end-i)])
+        (clue-tiles-set! clue-i i val #:contradiction-reason contradiction-reason)))
+
+    ;; initialize board with user tiles
+    (for ([i (in-range num-tiles)])
+      (define tile (array-ref user-tiles i))
+      (when (or (tile-full? tile)
+                (tile-cross? tile))
+        (board-set! i tile)))
 
     ;; -------------------------------------------------------------------------
 
     ;; Returns the index of the next clue of length `at-least-len`, starting with
     ;; index `clue-i`, for which the tile at index `tile-i` is 'empty in its clue
-    ;; range.
+    ;; tiles.
     (define (find-next-clue-with-hole-at clue-i tile-i #:at-least-length at-least-len)
       (for/first ([clue (in-array clues clue-i)]
-                  [clue-range (in-array clue-ranges clue-i)]
+                  [clue-tiles (in-array clue-tiless clue-i)]
                   [i (in-naturals)]
                   #:when (and (>= clue at-least-len)
-                              (tile-hole? (vector-ref clue-range tile-i))))
+                              (tile-hole? (vector-ref clue-tiles tile-i))))
         (+ clue-i i)))
 
     ;; Returns whether a clue could be legally placed starting at the given
-    ;; `start-i`, checking consistency with both user-tiles and its clue-range.
+    ;; `start-i`, checking consistency with both user-tiles and its clue-tiles.
     (define (valid-clue-placement? clue-i start-i)
       (define clue (array-ref clues clue-i))
-      (define clue-range (array-ref clue-ranges clue-i))
+      (define clue-tiles (array-ref clue-tiless clue-i))
       (define end-i (+ start-i clue))
       (and (<= end-i num-tiles)
            (not-full-before? user-tiles start-i)
-           (not-full-before? clue-range start-i)
+           (not-full-before? clue-tiles start-i)
            (not-full-after? user-tiles (sub1 end-i))
-           (not-full-after? clue-range (sub1 end-i))
+           (not-full-after? clue-tiles (sub1 end-i))
            (for/and ([i (in-range start-i end-i)])
              (and (tile-hole? (array-ref user-tiles i))
-                  (tile-hole? (vector-ref clue-range i))))))
+                  (tile-hole? (vector-ref clue-tiles i))))))
 
     ;; Returns the smallest or largest (depending on `which`) index at which the
     ;; placement of clue `clue-i` could begin that would cause it to overlap
@@ -147,59 +137,59 @@
 
     (define (gain-information-from-self* clue-i)
       (define clue (array-ref clues clue-i))
-      (define clue-range (array-ref clue-ranges clue-i))
+      (define clue-tiles (array-ref clue-tiless clue-i))
 
       ;; Cross out holes where the clue doesn’t fit.
       (let loop ([i 0])
-        (match (find-next-hole clue-range i)
+        (match (find-next-hole clue-tiles i)
           [#f (void)]
           [i
-           (define len (hole-length clue-range i))
+           (define len (hole-length clue-tiles i))
            (when (< len clue)
-             (tiles-fill!/track clue-range 'cross i (+ i len)))
+             (clue-tiles-fill! clue-i 'cross i (+ i len)))
            (loop (+ i len))]))
 
       ;; if any boxes are filled...
-      (match (find-first clue-range tile-full?)
+      (match (find-first clue-tiles tile-full?)
         [#f (void)]
         [first-full-i
-         (define last-full-i (find-last clue-range tile-full?))
+         (define last-full-i (find-last clue-tiles tile-full?))
 
          ;; ...fill in boxes between filled boxes
-         (tiles-fill!/track clue-range 'full first-full-i (add1 last-full-i)
-                            #:contradiction-reason "clue is discontiguous")
+         (clue-tiles-fill! clue-i 'full first-full-i (add1 last-full-i)
+                           #:contradiction-reason "clue is discontiguous")
 
          ;; ...cross off tiles unreachable due to clue length
-         (tiles-fill!/track clue-range 'cross 0 (- last-full-i (sub1 clue))
-                            #:contradiction-reason "clue is too long")
-         (tiles-fill!/track clue-range 'cross (+ first-full-i clue)
-                            #:contradiction-reason "clue is too long")
+         (clue-tiles-fill! clue-i 'cross 0 (- last-full-i (sub1 clue))
+                           #:contradiction-reason "clue is too long")
+         (clue-tiles-fill! clue-i 'cross (+ first-full-i clue)
+                           #:contradiction-reason "clue is too long")
 
          ;; ...cross off all holes unreachable due to a separating cross
-         (define prev-cross-i (find-prev clue-range first-full-i tile-cross?))
+         (define prev-cross-i (find-prev clue-tiles first-full-i tile-cross?))
          (when prev-cross-i
-           (tiles-fill!/track clue-range 'cross 0 prev-cross-i))
-         (define next-cross-i (find-next clue-range first-full-i tile-cross?))
+           (clue-tiles-fill! clue-i 'cross 0 prev-cross-i))
+         (define next-cross-i (find-next clue-tiles first-full-i tile-cross?))
          (when next-cross-i
-           (tiles-fill!/track clue-range 'cross next-cross-i))])
+           (clue-tiles-fill! clue-i 'cross next-cross-i))])
 
       ;; ensure there is a hole for the clue to actually go
-      (unless (find-next-hole clue-range 0)
+      (unless (find-next-hole clue-tiles 0)
         (raise-contradiction "not enough space for clue"))
 
       ;; if there is only one hole, fill boxes if possible
-      (match (find-singular-hole clue-range)
+      (match (find-singular-hole clue-tiles)
         [#f (void)]
         [i
-         (define len (hole-length clue-range i))
+         (define len (hole-length clue-tiles i))
          (cond
            [(odd? len)
             (define mid-tile (/ (sub1 len) 2))
             (when (< mid-tile clue)
               (define wing-len (- clue mid-tile 1))
-              (tiles-fill!/track
+              (clue-tiles-fill!
                #:contradiction-reason "not enough space for clue"
-               clue-range
+               clue-i
                'full
                (- (+ mid-tile i) wing-len)
                (+ (+ mid-tile i) wing-len 1)))]
@@ -207,21 +197,21 @@
             (define half-len (/ len 2))
             (when (< half-len clue)
               (define wing-len (- clue half-len))
-              (tiles-fill!/track
+              (clue-tiles-fill!
                #:contradiction-reason "not enough space for clue"
-               clue-range
+               clue-i
                'full
                (- (+ half-len i) wing-len)
                (+ (+ half-len i) wing-len)))])]))
 
     (define (propagate-information-to-neighbors clue-i)
       (define clue (array-ref clues clue-i))
-      (define clue-range (array-ref clue-ranges clue-i))
+      (define clue-tiles (array-ref clue-tiless clue-i))
 
-      ;; cross off tiles in previous clue’s range that would necessarily overlap with us
+      ;; cross off tiles in previous clue’s tiles that would necessarily overlap with us
       (unless (zero? clue-i)
-        (define first-full-i (find-first clue-range tile-full?))
-        (define last-hole-i (find-last clue-range tile-hole?))
+        (define first-full-i (find-first clue-tiles tile-full?))
+        (define last-hole-i (find-last clue-tiles tile-hole?))
         (define last-tile-previous-clue-can-occupy
           (min
            ;; if we have a filled tile, then the previous clue must leave a gap before it
@@ -229,14 +219,13 @@
            ;; the latest our first filled tile can appear is determined by the last hole and our clue size
            (if last-hole-i (- last-hole-i clue) num-tiles)))
         (when (< last-tile-previous-clue-can-occupy num-tiles)
-          (define other-clue-range (array-ref clue-ranges (sub1 clue-i)))
-          (tiles-fill!/track other-clue-range 'cross (max 0 last-tile-previous-clue-can-occupy)
-                             #:contradiction-reason "not enough space between neighboring clues’ full tiles")))
+          (clue-tiles-fill! (sub1 clue-i) 'cross (max 0 last-tile-previous-clue-can-occupy)
+                            #:contradiction-reason "not enough space between neighboring clues’ full tiles")))
 
-      ;; cross off tiles in next clue’s range that would necessarily overlap with us
+      ;; cross off tiles in next clue’s tiles that would necessarily overlap with us
       (when (< (add1 clue-i) num-clues)
-        (define last-full-i (find-last clue-range tile-full?))
-        (define first-hole-i (find-first clue-range tile-hole?))
+        (define last-full-i (find-last clue-tiles tile-full?))
+        (define first-hole-i (find-first clue-tiles tile-hole?))
         (define first-tile-next-clue-can-occupy
           (max
            ;; if we have a filled tile, then the next clue must leave a gap after it
@@ -244,9 +233,8 @@
            ;; the earliest our last filled tile can appear is determined by the first hole and our clue size
            (if first-hole-i (+ first-hole-i clue 1) 0)))
         (when (> first-tile-next-clue-can-occupy 0)
-          (define other-clue-range (array-ref clue-ranges (add1 clue-i)))
-          (tiles-fill!/track other-clue-range 'cross 0 (min num-tiles first-tile-next-clue-can-occupy)
-                             #:contradiction-reason "not enough space between neighboring clues’ full tiles"))))
+          (clue-tiles-fill! (add1 clue-i) 'cross 0 (min num-tiles first-tile-next-clue-can-occupy)
+                            #:contradiction-reason "not enough space between neighboring clues’ full tiles"))))
 
     (define (propagate-information-from-user)
       ;; Scan forwards through the user’s filled-in tiles.
@@ -264,9 +252,8 @@
               ;; Cross out tiles in the previous clue at/after the placement, as
               ;; it must be placed before this one.
               (unless (zero? placed-clue-i)
-                (define prev-clue-range (array-ref clue-ranges (sub1 placed-clue-i)))
-                (tiles-fill!/track prev-clue-range 'cross (max 0 (sub1 placement-i))
-                                   #:contradiction-reason "users’ filled tiles are inconsistent with clue order"))
+                (clue-tiles-fill! (sub1 placed-clue-i) 'cross (max 0 (sub1 placement-i))
+                                  #:contradiction-reason "users’ filled tiles are inconsistent with clue order"))
               ;; Advance to the end of the placement and continue. The next filled
               ;; tiles, if any, must belong to later clues.
               (define start-tile-i* (+ placement-i placed-clue 1))
@@ -288,10 +275,8 @@
               ;; Cross out tiles in the next clue at/before the placement, as it
               ;; must be placed after this one.
               (when (< (add1 placed-clue-i) num-clues)
-                (define placement-end-i (+ placement-i placed-clue))
-                (define prev-clue-range (array-ref clue-ranges (add1 placed-clue-i)))
-                (tiles-fill!/track prev-clue-range 'cross 0 (min num-tiles (add1 placement-i))
-                                   #:contradiction-reason "users’ filled tiles are inconsistent with clue order"))
+                (clue-tiles-fill! (add1 placed-clue-i) 'cross 0 (min num-tiles (add1 placement-i))
+                                  #:contradiction-reason "users’ filled tiles are inconsistent with clue order"))
               ;; Advance to the start of the placement and continue. The next filled
               ;; tiles, if any, must belong to earlier clues.
               (define end-tile-i* (sub1 placement-i))
@@ -305,8 +290,8 @@
         (define first-empty-clue-i (find-next-clue-with-hole-at 0 tile-i #:at-least-length len))
         (if first-empty-clue-i
             (unless (find-next-clue-with-hole-at (add1 first-empty-clue-i) tile-i #:at-least-length len)
-              ;; only one clue range with a hole at this location
-              (tiles-set!/track (array-ref clue-ranges first-empty-clue-i) tile-i 'full))
+              ;; only one clue with a hole at this location
+              (clue-tiles-set! first-empty-clue-i tile-i 'full))
             (raise-contradiction "tile filled by user cannot belong to any clues"))))
 
     (define (gain-information-to-fixed-point)
@@ -321,30 +306,93 @@
 
     ;; -------------------------------------------------------------------------
 
-    (define (extract-analysis clue-range)
-      (define first-full-i (find-first clue-range tile-full?))
-      (cond
-        [first-full-i
-         (define last-full-i (find-last clue-range tile-full?))
-         (if (and (bounded-before? user-tiles first-full-i)
-                  (bounded-after? user-tiles last-full-i)
-                  (for/and ([i (in-inclusive-range first-full-i last-full-i)])
-                    (tile-full? (array-ref user-tiles i))))
-             'done
-             'pending)]
-        [else 'pending]))
-
     (with-handlers* ([exn:contradiction? (λ (exn) 'error)])
       (gain-information-to-fixed-point)
-      (for/list ([clue-range (in-array clue-ranges)])
-        (extract-analysis clue-range)))))
+      (line-solution board-tiles clue-tiless))))
 
 ;; -------------------------------------------------------------------------
 
+;; solve-line : single-line-clues? tile-line? -> (or/c tile-line? 'error)
+(define (solve-line clues tiles)
+  (match (do-solve-line clues tiles)
+    ['error 'error]
+    [(line-solution board-tiles clue-tiless)
+     (define num-tiles (vector-length board-tiles))
+     (for/array #:length num-tiles
+                ([i (in-range num-tiles)])
+       (match (vector-ref board-tiles i)
+         ['empty
+          (if (for/and ([clue-tiles (in-array clue-tiless)])
+                (eq? (vector-ref clue-tiles i) 'cross))
+              'cross
+              'empty)]
+         [tile tile]))]))
+
+(module+ test
+  (check-equal? (solve-line '(1 2 1) #(empty empty empty empty empty empty))
+                #(full cross full full cross full)))
+
+;; -------------------------------------------------------------------------
+
+;; analyze-line/simple : single-line-clues? tile-line? -> (or/c 'done 'error #f)
+;;
+;; The simple analyzer performs a quick, cheap check to see whether a given line
+;; is fully solved. A result of #f requires the use of the fancy analyzer.
+(define (analyze-line/simple clues tiles)
+  (define num-tiles (array-length tiles))
+  (let loop ([clues clues]
+             [i 0])
+    (cond
+      [(< i num-tiles)
+       (match (array-ref tiles i)
+         ['full
+          (match clues
+            ['() 'error]
+            [(cons clue clues)
+             (and (<= (+ i clue) num-tiles)
+                  (for/and ([j (in-range 1 clue)])
+                    (eq? (array-ref tiles (+ i j)) 'full))
+                  (or (= (+ i clue) num-tiles)
+                      (not (eq? (array-ref tiles (+ i clue)) 'full)))
+                  (loop clues (+ i clue 1)))])]
+         [_ (loop clues (add1 i))])]
+      [(empty? clues) 'done]
+      [else #f])))
+
+(module+ test
+  (check-equal? (analyze-line/simple '(1) #(empty empty empty)) #f)
+  (check-equal? (analyze-line/simple '(1) #(full empty empty)) 'done)
+  (check-equal? (analyze-line/simple '(1) #(empty full empty)) 'done)
+  (check-equal? (analyze-line/simple '(1) #(empty empty full)) 'done)
+  (check-equal? (analyze-line/simple '(1 1) #(full full empty)) #f)
+  (check-equal? (analyze-line/simple '(1 1) #(full empty full)) 'done)
+  (check-equal? (analyze-line/simple '(1) #(full empty full)) 'error))
+
+;; analyze-line/solve : single-line-clues? tile-line? -> line-clue-analysis?
+(define (analyze-line/solve clues user-tiles)
+  (define (extract-analysis clue-tiles)
+    (define first-full-i (find-first clue-tiles tile-full?))
+    (cond
+      [first-full-i
+       (define last-full-i (find-last clue-tiles tile-full?))
+       (if (and (bounded-before? user-tiles first-full-i)
+                (bounded-after? user-tiles last-full-i)
+                (for/and ([i (in-inclusive-range first-full-i last-full-i)])
+                  (tile-full? (array-ref user-tiles i))))
+           'done
+           'pending)]
+      [else 'pending]))
+
+  (match (do-solve-line clues user-tiles)
+    ['error 'error]
+    [(line-solution _ clue-tiless)
+     (for/list ([clue-tiles (in-array clue-tiless)])
+       (extract-analysis clue-tiles))]))
+
 ;; analyze-line : single-line-clues? tile-line? -> line-clue-analysis?
-(define (analyze-line line-clues tiles)
-  (or (analyze-line/simple line-clues tiles)
-      (analyze-line/fancy line-clues tiles)))
+(define (analyze-line clues tiles)
+  (or (analyze-line/simple clues tiles)
+      (analyze-line/solve clues tiles)))
 
 (module+ test
   (check-equal? (analyze-line '(1 1) #(full cross empty)) '(done pending))

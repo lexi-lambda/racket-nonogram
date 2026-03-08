@@ -9,11 +9,11 @@
          racket/math
          threading
          toolbox/who
-         "analyze.rkt"
          "array.rkt"
          "core.rkt"
          "geometry.rkt"
-         "logger.rkt")
+         "logger.rkt"
+         "solve.rkt")
 
 (provide TILE-SIZE
          (contract-out
