@@ -92,17 +92,25 @@
                                   #:contradiction-reason (or/c string? #f)]
                                  void?)]
 
+          [bounded-behind?/mega (-> mega-tiles/c mega-index? boolean?)]
+          [bounded-afront?/mega (-> mega-tiles/c mega-index? boolean?)]
           [bounded-before?/mega (-> mega-tiles/c mega-index? boolean?)]
           [bounded-after?/mega (-> mega-tiles/c mega-index? boolean?)]
           [neighbor-matching?/mega (-> mega-tiles/c mega-index? tile-predicate/c boolean?)]
+          [neighbors-count/mega (-> mega-tiles/c mega-index? tile-predicate/c (integer-in 0 3))]
 
           [find-next/mega
-           (-> mega-tiles/c mega-index? tile-predicate/c (or/c mega-index? #f))]
+           (->* [mega-tiles/c mega-index? tile-predicate/c]
+                [#:end mega-index?]
+                (or/c mega-index? #f))]
           [find-prev/mega
-           (-> mega-tiles/c mega-index? tile-predicate/c (or/c mega-index? #f))]
+           (->* [mega-tiles/c mega-index? tile-predicate/c]
+                [#:start mega-index?]
+                (or/c mega-index? #f))]
           [find-first/mega (-> mega-tiles/c tile-predicate/c (or/c mega-index? #f))]
           [find-last/mega (-> mega-tiles/c tile-predicate/c (or/c mega-index? #f))]
           [find-next-hole/mega (-> mega-tiles/c mega-index? (or/c mega-index? #f))]
+          [find-singular-hole/mega (-> mega-tiles/c (or/c (cons/c mega-index? mega-index?) #f))]
 
           [connected-region-spans-both-lines?
            (-> mega-index? mega-index? clue? boolean?)]
@@ -112,8 +120,8 @@
            (-> mega-tiles/c mega-index? tile-predicate/c (values natural? natural?))]
           [connected-region-end/mega
            (-> mega-tiles/c mega-index? tile-predicate/c natural?)]
-          [hole-size+end/mega
-           (-> mega-tiles/c mega-index? (values natural? natural?))]
+          [hole-size+end/mega (-> mega-tiles/c mega-index? (values natural? natural?))]
+          [hole-end/mega (-> mega-tiles/c mega-index? natural?)]
 
           [line-affinity? flat-contract?]
           [earliest-reachable/mega
@@ -124,6 +132,9 @@
           [mega-placement-bound-line? flat-contract?]
           (struct mega-placement-bound ([line mega-placement-bound-line?]
                                         [tile natural?]))
+          [mega-index->placement-bound (-> mega-index? mega-placement-bound?)]
+          [mega-placement-bound->least-upper-bound (-> mega-placement-bound? mega-index?)]
+          [mega-placement-bound->greatest-lower-bound (-> mega-placement-bound? mega-index?)]
           [mega-placement-end-bound->line-lower-bounds
            (-> mega-placement-bound? (array/c natural? natural?))]
           [mega-placement-start-bound->line-upper-bounds
@@ -134,7 +145,13 @@
                (or/c (cons/c mega-index? mega-placement-bound?) #f))]
           [find-latest-tightest-placement-end+start/mega
            (-> mega-tiles/c mega-index? clue?
-               (or/c (cons/c mega-index? mega-placement-bound?) #f))]))
+               (or/c (cons/c mega-index? mega-placement-bound?) #f))]
+
+          [fill-forced-tiles-in-mega-span! (-> mega-tiles/c
+                                               mega-placement-bound?
+                                               mega-placement-bound?
+                                               #:set-full! (-> mega-index? any)
+                                               natural?)]))
 
 ;; -----------------------------------------------------------------------------
 
@@ -398,6 +415,14 @@
 
 ;; -----------------------------------------------------------------------------
 
+(define (bounded-behind?/mega tiles mi)
+  (or (zero? (mega-index-tile mi))
+      (tile-cross? (tiles-ref/mega tiles (behind mi)))))
+
+(define (bounded-afront?/mega tiles mi)
+  (or (= (add1 (mega-index-tile mi)) (mega-tiles-length tiles))
+      (tile-cross? (tiles-ref/mega tiles (afront mi)))))
+
 (define (bounded-before?/mega tiles mi)
   (define at-start? (zero? (mega-index-tile mi)))
   (and (or at-start?
@@ -426,20 +451,28 @@
       (and (< (add1 (mega-index-tile mi)) (mega-tiles-length tiles))
            (pred? (tiles-ref/mega tiles (afront mi))))))
 
+(define (neighbors-count/mega tiles mi pred?)
+  (define i (mega-index-tile mi))
+  (define (->1 v) (if v 1 0))
+  (+ (->1 (pred? (tiles-ref/mega tiles (opposite mi))))
+     (->1 (and (> i 0)
+               (pred? (tiles-ref/mega tiles (behind mi)))))
+     (->1 (and (< (add1 i) (mega-tiles-length tiles))
+               (pred? (tiles-ref/mega tiles (afront mi)))))))
+
 ;; -----------------------------------------------------------------------------
 
-(define (find-next/mega tiles start-mi pred?)
-  (define num-tiles/mega (mega-tiles-length/mega tiles))
+(define (find-next/mega tiles start-mi pred? #:end [end-mi (mega-tiles-length/mega tiles)])
   (let loop ([mi start-mi])
-    (if (< mi num-tiles/mega)
+    (if (< mi end-mi)
         (if (pred? (tiles-ref/mega tiles mi))
             mi
             (loop (add1 mi)))
         #f)))
 
-(define (find-prev/mega tiles end-mi pred?)
+(define (find-prev/mega tiles end-mi pred? #:start [start-mi 0])
   (let loop ([mi (sub1 end-mi)])
-    (if (>= mi 0)
+    (if (>= mi start-mi)
         (if (pred? (tiles-ref/mega tiles mi))
             mi
             (loop (sub1 mi)))
@@ -453,6 +486,15 @@
 
 (define (find-next-hole/mega tiles start-mi)
   (find-next/mega tiles start-mi tile-hole?))
+
+(define (find-singular-hole/mega tiles)
+  (match (find-next-hole/mega tiles 0)
+    [#f #f]
+    [start-mi
+     (define end-mi (hole-end/mega tiles start-mi))
+     (match (find-next-hole/mega tiles end-mi)
+       [#f (cons start-mi end-mi)]
+       [_  #f])]))
 
 ;; -----------------------------------------------------------------------------
 
@@ -527,6 +569,9 @@
 
 (define (hole-size+end/mega tiles start-mi)
   (connected-region-size+end/mega tiles start-mi tile-hole?))
+
+(define (hole-end/mega tiles start-mi)
+  (connected-region-end/mega tiles start-mi tile-hole?))
 
 ;; -----------------------------------------------------------------------------
 
@@ -679,6 +724,26 @@
 (define mega-placement-bound-line? (or/c 0 1 'either 'both))
 (struct mega-placement-bound (line tile) #:transparent)
 
+(define (mega-index->placement-bound mi)
+  (mega-placement-bound (mega-index-line mi)
+                        (mega-index-tile mi)))
+
+;; mega-placement-bound->least-upper-bound : mega-placement-bound? -> mega-index?
+(define (mega-placement-bound->least-upper-bound bound)
+  (match-define (mega-placement-bound line-i i) bound)
+  (match line-i
+    [(or 0 1) (mega-index line-i i)]
+    ['both    (mega-index 1 i)]
+    ['either  (mega-index 0 i)]))
+
+;; mega-placement-bound->greatest-lower-bound : mega-placement-bound? -> mega-index?
+(define (mega-placement-bound->greatest-lower-bound bound)
+  (match-define (mega-placement-bound line-i i) bound)
+  (match line-i
+    [(or 0 1) (mega-index line-i i)]
+    ['both    (mega-index 0 i)]
+    ['either  (mega-index 1 i)]))
+
 ;; mega-placement-end-bound->line-lower-bounds
 ;;   : mega-placement-bound? -> (array/c natural? natural?)
 ;;
@@ -737,10 +802,17 @@
       ['earliest (values add1 sub1 afront 1 (λ (i) (< i num-tiles)))]
       ['latest   (values sub1 add1 behind 0 (λ (i) (>= i 0)))]))
 
+  ;; A 2 clue cannot start on line 1 or end on line 0.
+  (define start-mi*
+    (if (and (= size 2)
+             (= (mega-index-line start-mi) special-line-i))
+        (next start-mi)
+        start-mi))
+
   (define num-tiles (array-length (array-ref tiles 0)))
-  (define start-line-i (mega-index-line start-mi))
-  (define start-tile-i (mega-index-tile start-mi))
-  (let loop ([start-mi start-mi]
+  (define start-line-i (mega-index-line start-mi*))
+  (define start-tile-i (mega-index-tile start-mi*))
+  (let loop ([start-mi start-mi*]
              [line-aff (if (= start-line-i special-line-i) special-line-i #f)]
              [i (if (= start-line-i special-line-i) (next start-tile-i) start-tile-i)]
              [size (if (= start-line-i special-line-i) (sub1 size) size)]
@@ -796,6 +868,20 @@
                                           #:which 'latest))
 
 (module+ test
+  (check-equal? (find-earliest-tightest-placement-start+end/mega
+                 #(#(cross empty empty)
+                   #(empty empty cross))
+                 (mega-index 1 0)
+                 2)
+                (cons (mega-index 0 1)
+                      (mega-placement-bound 'both 1)))
+  (check-equal? (find-latest-tightest-placement-end+start/mega
+                 #(#(cross empty empty)
+                   #(empty empty cross))
+                 (mega-index 0 2)
+                 2)
+                (cons (mega-index 1 1)
+                      (mega-placement-bound 'both 1)))
   (check-equal? (find-latest-tightest-placement-end+start/mega
                  #(#(cross empty cross cross)
                    #(cross empty empty cross))
@@ -810,3 +896,182 @@
                  4)
                 (cons (mega-index 0 3)
                       (mega-placement-bound 'both 1))))
+
+;; Given two mega placement bounds, fills any tiles forced by crosses
+;; along the path bridging the two bounds. For example, suppose we have
+;; the following row:
+;;   ☒☐☐☐☐☐☐☒☐■
+;;   ■☐☐☒☐☐☐☐☐☐
+;; This function will fill any tiles that must be filled to connect the
+;; two filled boxes:
+;;   ☒☐■■■☐☐☒☐■
+;;   ■■☐☒☐☐■■■☐
+;; It also calculates the minimum number of tiles that must be filled
+;; within the span, taking existing filled tiles into account.
+(define/who (fill-forced-tiles-in-mega-span! tiles first-bound last-bound #:set-full! set-full!)
+  (match-define (mega-placement-bound first-line first-i) first-bound)
+  (match-define (mega-placement-bound last-line last-i) last-bound)
+
+  (define (bound-line->aff bl)
+    (match bl
+      [(or 0 1) bl]
+      [(or 'either 'both) #f]))
+
+  (define num-tiles (mega-tiles-length tiles))
+
+  ;; Note [Forced mega span endpoints]
+  ;; ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  ;; Endpoints of the span must be handled specially. Normally, we fill tiles
+  ;; in one of the following shapes:
+  ;;   ■■■  ☐☒☐
+  ;;   ☐☒☐  ■■■
+  ;; This corresponds to the span having to snake around a cross. However, at
+  ;; consider the following row:
+  ;;   ☒☐☒☐☐☐☒
+  ;;   ☒☐☐☐☒☐☒
+  ;; Suppose the span starts at the top left empty tile and ends at the bottom
+  ;; right empty tile. If we only fill tiles in the above patterns, we’ll end up
+  ;; with the following:
+  ;;   ☒☐☒■■■☒
+  ;;   ☒■■■☒☐☒
+  ;; But this is missing the tiles at the ends! However, we don’t want to fill
+  ;; the bounds unconditionally. Suppose instead we have the following row:
+  ;;   ☐☐☒☐☐☐☐
+  ;;   ☐☐☐☐☒☐☐
+  ;; If the start and end locations are still the same, the tiles at the ends
+  ;; are no longer forced. On the other hand, if we have the row
+  ;;   ☐☐☒☐☐☐☒
+  ;;   ☒☐☐☐☒☐☐
+  ;; they *are* forced. Programmatically, the necessary conditions are:
+  ;;
+  ;;   1. The bound must cover 'both lines.
+  ;;   2. The opposite tile must be bounded behind or afront.
+  ;;
+  ;; Somewhat counterintuitively, the second condition is all that matters, and
+  ;; it holds regardless of whether the bound is the start bound or the end
+  ;; bound. To illustrate, consider the following examples:
+  ;;   ☐☐▧☐☐  ☐☐▧☐☐
+  ;;   ☐☒☐☐☐  ☐☐☐☒☐
+  ;; In both examples, ▧ represents a tile in one of the bound columns.
+  ;; Regardless of whether we are filling from the left or the right, if the
+  ;; bound’s line is 'both, the ▧ tile must be filled.
+
+  ;; see Note [Forced mega span endpoints]
+  (define (maybe-fill-end-tile! mi)
+    (cond
+      [(or (bounded-behind?/mega tiles (opposite mi))
+           (bounded-afront?/mega tiles (opposite mi)))
+       (set-full! mi)
+       1]
+      [(tile-full? (tiles-ref/mega tiles mi)) 1]
+      [else 0]))
+
+  ;; see Note [Forced mega span endpoints]
+  (define (maybe-fill-end-tiles! bound)
+    (match-define (mega-placement-bound line i) bound)
+    (match line
+      ['both
+       (+ (maybe-fill-end-tile! (mega-index 0 i))
+          (maybe-fill-end-tile! (mega-index 1 i)))]
+      [_ 0]))
+
+  (cond
+    [(> first-i last-i)
+     (raise-arguments-error who "first bound is larger than last bound"
+                            "first bound" first-bound
+                            "last bound" last-bound)]
+    [(= first-i last-i)
+     (match* {first-line last-line}
+       [{'both 'both}
+        (+ (maybe-fill-end-tile! (mega-index 0 first-i))
+           (maybe-fill-end-tile! (mega-index 1 first-i)))]
+       [{(or 0 'both) (or 0 'both)}
+        (set-full! (mega-index 0 first-i))
+        1]
+       [{(or 1 'both) (or 1 'both)}
+        (set-full! (mega-index 1 first-i))
+        1]
+       [{_ _} 0])]
+    [else
+     (maybe-fill-end-tiles! first-bound)
+     (maybe-fill-end-tiles! last-bound)
+     (let loop ([min-filled 0]
+                [line-aff (bound-line->aff first-line)]
+                [i first-i])
+
+       (define (line-aff? line-i)
+         (or (not line-aff) (= line-aff line-i)))
+       (define (line-cost line-i)
+         (if (line-aff? line-i) 0 1))
+
+       (cond
+         [(> i last-i) min-filled]
+         [else
+          (define mi0 (mega-index 0 i))
+          (define mi1 (mega-index 1 i))
+          (define tile-0 (tiles-ref/mega tiles mi0))
+          (define tile-1 (tiles-ref/mega tiles mi1))
+          (match* {tile-0 tile-1}
+            [{_ 'cross}
+             (unless (= i first-i)
+               (set-full! (behind mi0)))
+             (set-full! mi0)
+             (unless (= i last-i)
+               (set-full! (afront mi0)))
+             (loop (+ min-filled 1 (line-cost 0))
+                   0
+                   (add1 i))]
+            [{'cross _}
+             (unless (= i first-i)
+               (set-full! (behind mi1)))
+             (set-full! mi1)
+             (unless (= i last-i)
+               (set-full! (afront mi1)))
+             (loop (+ min-filled 1 (line-cost 1))
+                   1
+                   (add1 i))]
+            [{'full 'full}
+             (loop (+ min-filled 2) #f (add1 i))]
+            [{'full 'empty}
+             (if (line-aff? 0)
+                 (loop (+ min-filled 1) 0 (add1 i))
+                 (loop (+ min-filled 2) #f (add1 i)))]
+            [{'empty 'full}
+             (if (line-aff? 1)
+                 (loop (+ min-filled 1) 1 (add1 i))
+                 (loop (+ min-filled 2) #f (add1 i)))]
+            [{'empty 'empty}
+             (loop (+ min-filled 1) line-aff (add1 i))])]))]))
+
+(module+ test
+  (define (fill-forced-tiles-in-mega-span!* tiles first-bound last-bound)
+    (define tiles* (array-map array->vector tiles))
+    (cons
+     (fill-forced-tiles-in-mega-span!
+      tiles* first-bound last-bound
+      #:set-full! (λ (mi) (tiles-set!/mega tiles* mi 'full)))
+     tiles*))
+
+  (check-equal? (fill-forced-tiles-in-mega-span!*
+                 #(#(empty cross empty)
+                   #(empty empty empty))
+                 (mega-placement-bound 1 0)
+                 (mega-placement-bound 'both 2))
+                (cons 4 #(#(empty cross full)
+                          #(full  full  full))))
+
+  (check-equal? (fill-forced-tiles-in-mega-span!*
+                 #(#(cross cross cross empty empty)
+                   #(empty empty empty empty empty))
+                 (mega-placement-bound 1 1)
+                 (mega-placement-bound 'either 4))
+                (cons 4 #(#(cross cross cross empty empty)
+                          #(empty full  full  full  empty))))
+
+  (check-equal? (fill-forced-tiles-in-mega-span!*
+                 #(#(cross empty empty)
+                   #(full  full  empty))
+                 (mega-placement-bound 'both 1)
+                 (mega-placement-bound 'either 2))
+                (cons 2 #(#(cross empty empty)
+                          #(full  full  empty)))))

@@ -15,7 +15,7 @@
 (provide (contract-out
           [analyze-line/mega
            (-> mega-line-clues? mega-tile-line? line-clue-analysis?)]
-          [solve-line/mega (-> mega-line-clues? mega-tile-line? mega-tile-line?)]))
+          [solve-line/mega (-> mega-line-clues? mega-tile-line? (or/c mega-tile-line? 'error))]))
 
 ;; -----------------------------------------------------------------------------
 
@@ -374,6 +374,8 @@
         (when (= line-first-hole-i line-last-hole-i)
           (clue-tiles-set!/mega clue-i (mega-index line-i line-first-hole-i) 'full)))
 
+      
+
       ;; If any boxes are filled...
       (match (find-first/mega clue-tiles tile-full?)
         [#f (void)]
@@ -390,65 +392,19 @@
          ;; ...fill in boxes that must be filled to bridge filled boxes. Also,
          ;; keep track of the minimum number of tiles filled between the start
          ;; and end points, as well as whether it must have tiles in each line.
-         (define-values [min-filled filled-0? filled-1?]
-           (let ()
-             (define (fill! mi)
-               (clue-tiles-set!/mega clue-i mi 'full #:contradiction-reason "clue is discontiguous"))
-
-             (let loop ([min-filled 0]
-                        [filled-0? (= first-full-line-i 0)]
-                        [filled-1? (= first-full-line-i 1)]
-                        [line-aff #f]
-                        [i first-full-i])
-
-               (define (line-aff? line-i)
-                 (or (not line-aff) (= line-aff line-i)))
-               (define (line-cost line-i)
-                 (if (line-aff? line-i) 0 1))
-
-               (cond
-                 [(> i last-full-i)
-                  (values min-filled filled-0? filled-1?)]
-                 [else
-                  (define mi0 (mega-index 0 i))
-                  (define mi1 (mega-index 1 i))
-                  (define tile-0 (tiles-ref/mega clue-tiles mi0))
-                  (define tile-1 (tiles-ref/mega clue-tiles mi1))
-                  (match* {tile-0 tile-1}
-                    [{_ 'cross}
-                     (unless (= i first-full-i)
-                       (fill! (behind mi0)))
-                     (fill! mi0)
-                     (unless (= i last-full-i)
-                       (fill! (afront mi0)))
-                     (loop (+ min-filled 1 (line-cost 0))
-                           #t
-                           filled-1?
-                           0
-                           (add1 i))]
-                    [{'cross _}
-                     (unless (= i first-full-i)
-                       (fill! (behind mi1)))
-                     (fill! mi1)
-                     (unless (= i last-full-i)
-                       (fill! (afront mi1)))
-                     (loop (+ min-filled 1 (line-cost 1))
-                           filled-0?
-                           #t
-                           1
-                           (add1 i))]
-                    [{'full 'full}
-                     (loop (+ min-filled 2) #t #t #f (add1 i))]
-                    [{'full 'empty}
-                     (if (line-aff? 0)
-                         (loop (+ min-filled 1) #t filled-1? 0 (add1 i))
-                         (loop (+ min-filled 2) #t #t #f (add1 i)))]
-                    [{'empty 'full}
-                     (if (line-aff? 1)
-                         (loop (+ min-filled 1) filled-0? #t 1 (add1 i))
-                         (loop (+ min-filled 2) #t #t #f (add1 i)))]
-                    [{'empty 'empty}
-                     (loop (+ min-filled 1) filled-0? filled-1? line-aff (add1 i))])]))))
+         (define min-filled
+           (cond
+             [(= first-full-i last-full-i)
+              (if (= first-full-line-i last-full-line-i) 1 2)]
+             [else
+              (fill-forced-tiles-in-mega-span!
+               clue-tiles
+               (mega-index->placement-bound first-full-mi)
+               (mega-index->placement-bound last-full-mi)
+               #:set-full!
+               (λ (mi)
+                 (clue-tiles-set!/mega clue-i mi 'full
+                                       #:contradiction-reason "clue is discontiguous")))]))
 
          ;; ...cross out boxes unreachable due to clue length. Also, while we’re
          ;; at it, cross out all holes unreachable due to separating crosses.
@@ -478,7 +434,83 @@
 
       ;; Ensure there is a hole for the clue to actually go.
       (unless (find-next-hole/mega clue-tiles 0)
-        (raise-contradiction "no space for clue")))
+        (raise-contradiction "no space for clue"))
+
+      ;; If there is only one hole, fill boxes if possible.
+      (match (find-singular-hole/mega clue-tiles)
+        [#f (void)]
+        [(cons start-mi end-mi)
+         (match (find-earliest-tightest-placement-start+end/mega clue-tiles start-mi clue)
+           [#f (raise-contradiction "no space for clue")]
+           [(cons start-mi* end-lower-bound)
+            (match-define (cons last-mi start-upper-bound)
+              (find-latest-tightest-placement-end+start/mega clue-tiles (sub1 end-mi) clue))
+            (define end-mi* (add1 last-mi))
+
+            ;; Cross out any ends of the hole where the placement cannot go.
+            (clue-tiles-fill!/mega clue-i 'cross start-mi start-mi*
+                                   #:contradiction-reason "filled tile cannot belong to earliest tightest placement")
+            (clue-tiles-fill!/mega clue-i 'cross end-mi* end-mi
+                                   #:contradiction-reason "filled tile cannot belong to latest tightest placement")
+
+            (define end-lower-bounds (mega-placement-end-bound->line-lower-bounds end-lower-bound))
+            (define start-upper-bounds (mega-placement-start-bound->line-upper-bounds start-upper-bound))
+
+            ;; It is time to try to fill in boxes using the usual left/right
+            ;; solve strategy. However, for mega clues, this is substantially
+            ;; more complicated. We have to consider two cases separately:
+            ;;
+            ;;   1. If the earliest/latest placement overlaps with an existing
+            ;;      filled-in tile, we want to “extend” the filled region to the
+            ;;      placement’s bound. For example, suppose we a mega 5 clue in
+            ;;      the following row:
+            ;;        ☒☒☒☐☐
+            ;;        ☐■☐☐☐
+            ;;      Since the earliest placement’s end bound is larger than the
+            ;;      filled tile, we want to fill any tiles forced by crosses
+            ;;      from the tile to the bound:
+            ;;        ☒☒☒☐☐
+            ;;        ☐■■■☐
+            ;;
+            ;;   2. If the earliest/latest bounds overlap, we want to fill any
+            ;;      tiles forced by crosses between them. For example, suppose we
+            ;;      have a mega 5 clue in the following row:
+            ;;        ☒☐☐☐☐ ⇒ ☒■■■☐
+            ;;        ☐☐☒☒☐ ⇒ ☐☐☒☒☐
+            ;;
+            ;; It might seem as though tiles filled by the second rule would
+            ;; always include those filled by the first, as long as we’ve placed
+            ;; crosses appropriately to limit the size of the hole. Unfortunately,
+            ;; this is not always true, at least with our current algorithm for
+            ;; selecting an earliest/latest placement. For example, suppose we
+            ;; modify the first example slightly:
+            ;;   ☒☒☐☐☐
+            ;;   ☐■☐☐☐
+            ;; Here, there is no overlap guaranteed by the bounds alone, so if
+            ;; we didn’t have any filled-in tiles, we wouldn’t be able to gain
+            ;; any information.
+
+            (define (fill-span! first-bound last-bound)
+              (fill-forced-tiles-in-mega-span!
+               clue-tiles first-bound last-bound
+               #:set-full!
+               (λ (mi)
+                 (clue-tiles-set!/mega clue-i mi 'full
+                                       #:contradiction-reason "not enough space for clue"))))
+
+            ;; First, fill spans based on overlap with filled tiles (case 1 above).
+            (define first-full-mi (find-next/mega clue-tiles start-mi* tile-full? #:end end-mi*))
+            (when first-full-mi
+              (define last-full-mi (find-prev/mega clue-tiles end-mi* tile-full? #:start start-mi*))
+              (when (< first-full-mi (mega-placement-bound->least-upper-bound end-lower-bound))
+                (fill-span! (mega-index->placement-bound first-full-mi) end-lower-bound))
+              (when (< (mega-placement-bound->greatest-lower-bound start-upper-bound) last-full-mi)
+                (fill-span! start-upper-bound (mega-index->placement-bound last-full-mi))))
+
+            ;; Next, fill span if earliest/latest bounds overlap.
+            (when (<= (mega-placement-bound-tile start-upper-bound)
+                      (mega-placement-bound-tile end-lower-bound))
+              (fill-span! start-upper-bound end-lower-bound))])]))
 
     ;; -------------------------------------------------------------------------
 
@@ -676,10 +708,30 @@
            [tile tile])))]))
 
 (module+ test
+  (check-equal? (solve-line/mega '(2) #(#(cross full empty empty)
+                                        #(empty full cross empty)))
+                #(#(cross full cross cross)
+                  #(cross full cross cross)))
   (check-equal? (solve-line/mega '(2 2 2) #(#(empty empty empty empty empty)
                                             #(empty empty empty empty empty)))
                 #(#(full cross full cross full)
-                  #(full cross full cross full))))
+                  #(full cross full cross full)))
+  (check-equal? (solve-line/mega '(3) #(#(cross empty empty empty)
+                                        #(full  empty empty empty)))
+                #(#(cross full cross cross)
+                  #(full  full cross cross)))
+  (check-equal? (solve-line/mega '(3) #(#(cross cross empty empty)
+                                        #(cross full  empty empty)))
+                #(#(cross cross full cross)
+                  #(cross full  full cross)))
+  (check-equal? (solve-line/mega '(2 3) #(#(full cross cross empty empty)
+                                          #(full cross full  empty empty)))
+                #(#(full cross cross full cross)
+                  #(full cross full  full cross)))
+  (check-equal? (solve-line/mega '(4) #(#(cross empty empty)
+                                        #(full  empty empty)))
+                #(#(cross empty empty)
+                  #(full  full  empty))))
 
 ;; -----------------------------------------------------------------------------
 
