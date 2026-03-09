@@ -108,3 +108,9 @@
     (if (equal? old-pz new-pz)
         old-pz
         (loop new-pz))))
+
+(module+ test
+  (for ([puzzle-entry (in-list all-puzzles)])
+    (match-define (cons name pz) puzzle-entry)
+    (with-check-info (['name name])
+      (check-not-exn (λ () (solve-puzzle pz))))))

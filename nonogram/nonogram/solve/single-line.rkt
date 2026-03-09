@@ -3,6 +3,7 @@
 (require racket/contract
          racket/list
          racket/match
+         threading
          "../array.rkt"
          "../core.rkt"
          "core.rkt")
@@ -29,6 +30,13 @@
     (define clues (list->array clues-lst))
     (define num-clues (array-length clues))
 
+    ;; `unassigned-user-tiles` tracks all tiles filled by the user that have not
+    ;; yet been claimed by any clues.
+    (define unassigned-user-tiles (make-empty-tiles))
+    (for ([i (in-range num-tiles)]
+          #:when (tile-full? (array-ref user-tiles i)))
+      (vector-set! unassigned-user-tiles i 'full))
+
     (define board-tiles (make-empty-tiles))
     (define clue-tiless
       (for/array #:length num-clues
@@ -46,6 +54,11 @@
         (for ([clue-i (in-range num-clues)])
           (clue-tiles-set! clue-i i 'cross #:contradiction-reason reason))))
 
+    (define (board-fill! val [start-i 0] [end-i num-tiles]
+                         #:contradiction-reason [reason (current-contradiction-reason)])
+      (for ([i (in-range start-i end-i)])
+        (board-set! i val #:contradiction-reason reason)))
+
     (define (clue-tiles-set! clue-i i val
                              #:contradiction-reason [reason (current-contradiction-reason)])
       (define clue-tiles (array-ref clue-tiless clue-i))
@@ -53,6 +66,7 @@
 
       ; propagate filled tiles to board and cross other clues
       (when (tile-full? val)
+        (vector-set! unassigned-user-tiles i 'empty)
         (board-set! i 'full)
         (for ([other-i (in-range num-clues)]
               #:unless (equal? clue-i other-i))
@@ -85,52 +99,72 @@
         (+ clue-i i)))
 
     ;; Returns whether a clue could be legally placed starting at the given
-    ;; `start-i`, checking consistency with both user-tiles and its clue-tiles.
-    (define (valid-clue-placement? clue-i start-i)
+    ;; `start-i`, checking consistency with both board-tiles and its clue-tiles.
+    (define (valid-clue-placement? clue-i start-i
+                                   #:already-checked-span? [already-checked-span? #f])
       (define clue (array-ref clues clue-i))
       (define clue-tiles (array-ref clue-tiless clue-i))
       (define end-i (+ start-i clue))
       (and (<= end-i num-tiles)
-           (not-full-before? user-tiles start-i)
+           (not-full-before? board-tiles start-i)
            (not-full-before? clue-tiles start-i)
-           (not-full-after? user-tiles (sub1 end-i))
+           (not-full-after? board-tiles (sub1 end-i))
            (not-full-after? clue-tiles (sub1 end-i))
-           (for/and ([i (in-range start-i end-i)])
-             (and (tile-hole? (array-ref user-tiles i))
-                  (tile-hole? (vector-ref clue-tiles i))))))
+           (or already-checked-span?
+               (span-all? clue-tiles start-i end-i tile-hole?))))
 
     ;; Returns the smallest or largest (depending on `which`) index at which the
-    ;; placement of clue `clue-i` could begin that would cause it to overlap
-    ;; `tile-i`. If no such placement exists, returns #f.
-    ;;
-    ;; Note: This is a kind of string matching, which could theoretically be
-    ;; accelerated using a string matching algorithm like KMP or BM.
-    (define (find-placement-covering-tile which clue-i tile-i)
+    ;; placement of clue `clue-i` could begin that would cause it to completely
+    ;; cover the span [start-i, end-i). If `which` is 'both, the result is a
+    ;; pair of the smallest and largest indexes. If no such placement exists,
+    ;; returns #f.
+    (define (find-placement-covering-span which clue-i start-i end-i)
       (define clue (array-ref clues clue-i))
-      (define start-i (max 0 (add1 (- tile-i clue))))
-      (define end-i (min tile-i (- num-tiles clue)))
-      (match which
-        ['earliest (for/first ([i (in-inclusive-range start-i end-i)]
-                               #:when (valid-clue-placement? clue-i i))
-                     i)]
-        ['latest   (for/first ([i (in-inclusive-range end-i start-i -1)]
-                               #:when (valid-clue-placement? clue-i i))
-                     i)]))
+      (define clue-tiles (array-ref clue-tiless clue-i))
+      (define len (- end-i start-i))
+      (cond
+        [(and (>= clue len)
+              (span-all? clue-tiles start-i end-i tile-hole?))
+         (define min-placement-start-i
+           (span-start clue-tiles start-i tile-hole? #:start (max 0 (- start-i (- clue len)))))
+         (define max-placement-end-i
+           (span-end clue-tiles (sub1 end-i) tile-hole? #:end (min num-tiles (+ end-i (- clue len)))))
+
+         (define (get-earliest)
+           (for/first ([i (in-range min-placement-start-i max-placement-end-i)]
+                       #:when (valid-clue-placement? clue-i i #:already-checked-span? #t))
+             i))
+
+         (define (get-latest [start-i min-placement-start-i])
+           (for/first ([i (in-inclusive-range (sub1 max-placement-end-i) start-i -1)]
+                       #:when (valid-clue-placement? clue-i i #:already-checked-span? #t))
+             i))
+
+         (and (<= clue (- max-placement-end-i min-placement-start-i))
+              (match which
+                ['earliest (get-earliest)]
+                ['latest (get-latest)]
+                ['both
+                 (define earliest-i (get-earliest))
+                 (and earliest-i
+                      (cons earliest-i (or (get-latest (add1 earliest-i))
+                                           earliest-i)))]))]
+        [else #f]))
 
     ;; Searches for the first clue after `start-clue-i` with a valid placement
-    ;; covering `tile-i`. If found, returns a pair of two values: the clue’s index
-    ;; and the index of the first tile in the found placement. If not found,
-    ;; returns #f.
-    (define (find-earliest-clue-with-placement-covering-tile start-clue-i tile-i #:placement which-placement)
+    ;; covering the span [start-i, clue-i). If found, returns a pair of two
+    ;; values: the clue’s index and the index of the first tile in the found
+    ;; placement. If not found, returns #f.
+    (define (find-earliest-clue-with-placement-covering-span start-clue-i start-i end-i #:placement which-placement)
       (for/or ([clue-i (in-range start-clue-i num-clues)])
-        (define placement-i (find-placement-covering-tile which-placement clue-i tile-i))
+        (define placement-i (find-placement-covering-span which-placement clue-i start-i end-i))
         (and placement-i (cons clue-i placement-i))))
 
     ;; Like `find-earliest-clue-with-placement-covering-tile`, but for the latest
     ;; clue instead of the earliest.
-    (define (find-latest-clue-with-placement-covering-tile end-clue-i tile-i #:placement which-placement)
+    (define (find-latest-clue-with-placement-covering-span end-clue-i start-i end-i #:placement which-placement)
       (for/or ([clue-i (in-inclusive-range (sub1 end-clue-i) 0 -1)])
-        (define placement-i (find-placement-covering-tile which-placement clue-i tile-i))
+        (define placement-i (find-placement-covering-span which-placement clue-i start-i end-i))
         (and placement-i (cons clue-i placement-i))))
 
     ;; -------------------------------------------------------------------------
@@ -237,62 +271,130 @@
                             #:contradiction-reason "not enough space between neighboring clues’ full tiles"))))
 
     (define (propagate-information-from-user)
-      ;; Scan forwards through the user’s filled-in tiles.
-      (let loop ([start-tile-i 0]
-                 [start-clue-i 0])
-        (match (find-next user-tiles start-tile-i tile-full?)
-          [#f (void)]
-          [full-i
-           ;; Find the earliest clue that could potentially cover this tile.
-           (match (find-earliest-clue-with-placement-covering-tile start-clue-i full-i #:placement 'latest)
-             [#f
-              (raise-contradiction "tile filled by user cannot belong to any clues")]
-             [(cons placed-clue-i placement-i)
-              (define placed-clue (array-ref clues placed-clue-i))
-              ;; Cross out tiles in the previous clue at/after the placement, as
-              ;; it must be placed before this one.
-              (unless (zero? placed-clue-i)
-                (clue-tiles-fill! (sub1 placed-clue-i) 'cross (max 0 (sub1 placement-i))
-                                  #:contradiction-reason "users’ filled tiles are inconsistent with clue order"))
-              ;; Advance to the end of the placement and continue. The next filled
-              ;; tiles, if any, must belong to later clues.
-              (define start-tile-i* (+ placement-i placed-clue 1))
-              (when (< start-tile-i* num-tiles)
-                (loop start-tile-i* (add1 placed-clue-i)))])]))
+      ;; Scan through the user’s filled-in tiles.
+      (define (scan-unassigned-tiles forwards?)
+        (define first-clue? (if forwards? zero? (λ~> add1 (= num-clues))))
+        (define prev (if forwards? sub1 add1))
+        (define next (if forwards? add1 sub1))
+        (define after (if forwards? add1 values))
+        (define lower-bound (if forwards? min max))
+        (define earliest (if forwards? 'earliest 'latest))
 
-      ;; Now repeat the above process but scanning backwards, instead.
-      (let loop ([end-tile-i num-tiles]
-                 [end-clue-i num-clues])
-        (match (find-prev user-tiles end-tile-i tile-full?)
-          [#f (void)]
-          [full-i
-           ;; Find the latest clue that could potentially cover this tile.
-           (match (find-latest-clue-with-placement-covering-tile end-clue-i full-i #:placement 'earliest)
-             [#f
-              (raise-contradiction "tile filled by user cannot belong to any clues")]
-             [(cons placed-clue-i placement-i)
-              (define placed-clue (array-ref clues placed-clue-i))
-              ;; Cross out tiles in the next clue at/before the placement, as it
-              ;; must be placed after this one.
-              (when (< (add1 placed-clue-i) num-clues)
-                (clue-tiles-fill! (add1 placed-clue-i) 'cross 0 (min num-tiles (add1 placement-i))
-                                  #:contradiction-reason "users’ filled tiles are inconsistent with clue order"))
-              ;; Advance to the start of the placement and continue. The next filled
-              ;; tiles, if any, must belong to earlier clues.
-              (define end-tile-i* (sub1 placement-i))
-              (when (> end-tile-i* 0)
-                (loop end-tile-i* placed-clue-i))])]))
+        (define find-next*
+          (if forwards?
+              find-next
+              (λ (tiles start-i pred? #:end [end-i 0])
+                (find-prev tiles start-i pred? #:start end-i))))
 
-      ;; fill in tiles filled by the user that can only belong to one clue
-      (for ([(tile tile-i) (in-indexed (in-array user-tiles))]
-            #:when (eq? tile 'full))
-        (define len (span-length user-tiles tile-i tile-full?))
-        (define first-empty-clue-i (find-next-clue-with-hole-at 0 tile-i #:at-least-length len))
-        (if first-empty-clue-i
-            (unless (find-next-clue-with-hole-at (add1 first-empty-clue-i) tile-i #:at-least-length len)
-              ;; only one clue with a hole at this location
-              (clue-tiles-set! first-empty-clue-i tile-i 'full))
-            (raise-contradiction "tile filled by user cannot belong to any clues"))))
+        (let loop ([start-tile-i (if forwards? 0 num-tiles)]
+                   [start-clue-i (if forwards? 0 num-clues)])
+          (match (find-next* unassigned-user-tiles start-tile-i tile-full?)
+            [#f (void)]
+            [full-i
+             (define-values [full-start-i full-end-i] (span-start+end board-tiles full-i tile-full?))
+             (define (get-next-placement start-clue-i #:which which-placement)
+               (if forwards?
+                   (find-earliest-clue-with-placement-covering-span start-clue-i full-start-i full-end-i
+                                                                    #:placement which-placement)
+                   (find-latest-clue-with-placement-covering-span start-clue-i full-start-i full-end-i
+                                                                  #:placement which-placement)))
+             ;; Find the earliest clue that could potentially cover this tile.
+             (match (get-next-placement start-clue-i #:which 'both)
+               [#f
+                (raise-contradiction "tile filled by user cannot belong to any clues")]
+               [(cons placed-clue-i (cons earliest-placement-i latest-placement-i))
+                (define placed-clue (array-ref clues placed-clue-i))
+                (define earliest-placement-end-i (+ earliest-placement-i placed-clue))
+                (define latest-placement-end-i (+ latest-placement-i placed-clue))
+
+                ;; Cross out tiles in the previous clue at/after the placement, as
+                ;; it must be placed before this one.
+                (unless (first-clue? placed-clue-i)
+                  (parameterize ([current-contradiction-reason "users’ filled tiles are inconsistent with clue order"])
+                    (if forwards?
+                        (clue-tiles-fill! (prev placed-clue-i) 'cross (max 0 (prev latest-placement-i)))
+                        (clue-tiles-fill! (prev placed-clue-i) 'cross 0 (min num-tiles (prev earliest-placement-end-i))))))
+
+                ;; Check if there are any other clues that could cover this tile,
+                ;; or if this is the only one.
+                (match (get-next-placement (after placed-clue-i) #:which earliest)
+                  [#f
+                   ;; This is the only clue, so we can assign this tile and any
+                   ;; other tiles that must be covered by the placement to it.
+                   (let assign-loop ([full-i full-i])
+                     (clue-tiles-set! placed-clue-i full-i 'full)
+                     (match (find-next* unassigned-user-tiles
+                                        (after full-i)
+                                        tile-full?
+                                        #:end (if forwards? earliest-placement-end-i latest-placement-i))
+                       [#f (void)]
+                       [full-i (assign-loop full-i)]))]
+
+                  [other-clue-placement
+                   ;; There are other clues that could cover this tile. However, we can still
+                   ;; potentially gain information in one of two ways:
+                   ;;
+                   ;;   1. We can calculate the lower bound of all possible placements’ start
+                   ;;      positions. If they all must start at `full-i`, we can place a cross
+                   ;;      on the board before it.
+                   ;;
+                   ;;      For example, suppose we have the following puzzle row:
+                   ;;          1 3 ☐☐■☐■☐☐
+                   ;;      This will result in the following solver state:
+                   ;;        board ☐☐■☐■☐☐
+                   ;;            1 ☐☐☐☒☒☒☒
+                   ;;            3 ☒☒☐☐■☐☐
+                   ;;      We can’t be certain whether the first filled-in tile belongs to the
+                   ;;      1 or the 3. However, we do know that the lower bound of both
+                   ;;      placements’ start positions is column 2. Therefore, we can place a
+                   ;;      cross on the board just before it:
+                   ;;        board ☐☒■☐■☐☐
+                   ;;
+                   ;;   2. We can calculate the lower bound of all possible placements’ end
+                   ;;      positions. If they are greater than `full-i`, then all tiles
+                   ;;      between `full-i` and the bound must be filled.
+                   ;;
+                   ;;      For example, suppose we have the following puzzle row:
+                   ;;          2 3 ☐☐☒■☐☐☐☐☐
+                   ;;      We can’t know whether the filled tile belongs to the 2 or the 3.
+                   ;;      However, we do know that all possible placements must be at least
+                   ;;      2 tiles long. Therefore, we can fill the board tile after it:
+                   ;;        board ☐☐☒■■☐☐☐☐
+                   (let bounds-loop ([start-bound (if forwards? earliest-placement-i latest-placement-i)]
+                                     [end-bound (if forwards? earliest-placement-end-i latest-placement-end-i)]
+                                     [other-placement other-clue-placement])
+                     (match other-placement
+                       [(cons clue-i earliest-placement-i)
+                        (define clue (array-ref clues clue-i))
+                        (bounds-loop (lower-bound start-bound earliest-placement-i)
+                                     (lower-bound end-bound (+ earliest-placement-i clue))
+                                     (get-next-placement (after clue-i) #:which earliest))]
+                       [#f
+                        (cond
+                          [forwards?
+                           (when (and (= start-bound full-i) (> full-i 0))
+                             (board-set! (sub1 full-i) 'cross))
+                           (board-fill! 'full (add1 full-i) end-bound)]
+                          [else
+                           (define after-full-i (add1 full-i))
+                           (when (and (= after-full-i end-bound) (< after-full-i num-tiles))
+                             (board-set! after-full-i 'cross))
+                           (board-fill! 'full start-bound full-i)])]))])
+
+                ;; Advance to the end of the placement and continue (leaving a gap for the
+                ;; following cross). The next filled tiles, if any, must belong to later clues.
+                (cond
+                  [forwards?
+                   (define start-tile-i* (next latest-placement-end-i))
+                   (when (< start-tile-i* num-tiles)
+                     (loop start-tile-i* (after placed-clue-i)))]
+                  [else
+                   (define start-tile-i* (next earliest-placement-i))
+                   (when (>= start-tile-i* 0)
+                     (loop start-tile-i* (after placed-clue-i)))])])])))
+
+      (scan-unassigned-tiles #t)
+      (scan-unassigned-tiles #f))
 
     (define (gain-information-to-fixed-point)
       (let go-again ()
@@ -330,7 +432,9 @@
 
 (module+ test
   (check-equal? (solve-line '(1 2 1) #(empty empty empty empty empty empty))
-                #(full cross full full cross full)))
+                #(full cross full full cross full))
+  (check-equal? (solve-line '(4 1) #(empty empty empty full full empty full))
+                #(cross full full full full cross full)))
 
 ;; -------------------------------------------------------------------------
 

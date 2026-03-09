@@ -4,6 +4,7 @@
          racket/match
          racket/math
          racket/mutability
+         threading
          toolbox/who
          "../array.rkt"
          "../core.rkt")
@@ -43,11 +44,18 @@
           [bounded-before? (-> tiles/c natural? boolean?)]
           [bounded-after? (-> tiles/c natural? boolean?)]
           [neighbor-matching? (-> tiles/c natural? tile-predicate/c boolean?)]
+          [span-all? (-> tiles/c natural? natural? tile-predicate/c boolean?)]
 
-          [find-next (-> tiles/c natural? tile-predicate/c (or/c natural? #f))]
-          [find-prev (-> tiles/c natural? tile-predicate/c (or/c natural? #f))]
+          [find-next (->* [tiles/c natural? tile-predicate/c] [#:end natural?] (or/c natural? #f))]
+          [find-prev (->* [tiles/c natural? tile-predicate/c] [#:start natural?] (or/c natural? #f))]
           [find-first (-> tiles/c tile-predicate/c (or/c natural? #f))]
           [find-last (-> tiles/c tile-predicate/c (or/c natural? #f))]
+          [span-start (->* [tiles/c natural? tile-predicate/c] [#:start natural?] natural?)]
+          [span-end (->* [tiles/c natural? tile-predicate/c] [#:end natural?] natural?)]
+          [span-start+end (->* [tiles/c natural? tile-predicate/c]
+                               [#:start natural?
+                                #:end natural?]
+                               (values natural? natural?))]
           [span-length (-> tiles/c natural? tile-predicate/c natural?)]
 
           [find-next-hole (-> tiles/c natural? (or/c natural? #f))]
@@ -186,7 +194,7 @@
 (define/who (tiles-set!/track vec i val
                               #:contradiction-reason [contradiction-reason (current-contradiction-reason)])
   (when (eq? val 'empty)
-    (raise-arguments-error who "internal error: setting clue range tile to 'empty"))
+    (raise-arguments-error who "internal error: setting tile to 'empty"))
   (match (vector-ref vec i)
     ['empty
      (vector-set! vec i val)
@@ -196,9 +204,11 @@
     [other-val
      (if contradiction-reason
          (raise-contradiction contradiction-reason)
-         (raise-arguments-error who "internal error: overwriting non-empty clue range tile"
+         (raise-arguments-error who "internal error: overwriting non-empty tile"
                                 "old tile" other-val
-                                "new tile" val))]))
+                                "new tile" val
+                                "index" i
+                                "tiles..." vec))]))
 
 (define (tiles-fill!/track vec value [start-i 0] [end-i (vector-length vec)]
                            #:contradiction-reason [contradiction-reason (current-contradiction-reason)])
@@ -229,19 +239,23 @@
       (and (< (add1 i) (vector-length tiles))
            (pred? (vector-ref tiles (add1 i))))))
 
+(define (span-all? tiles start-i end-i pred?)
+  (for/and ([i (in-range start-i end-i)])
+    (pred? (vector-ref tiles i))))
+
 ;; -----------------------------------------------------------------------------
 
-(define (find-next vec start-i pred?)
+(define (find-next vec start-i pred? #:end [end-i (vector-length vec)])
   (let loop ([i start-i])
-    (if (< i (vector-length vec))
+    (if (< i end-i)
         (if (pred? (vector-ref vec i))
             i
             (loop (add1 i)))
         #f)))
 
-(define (find-prev vec end-i pred?)
+(define (find-prev vec end-i pred? #:start [start-i 0])
   (let loop ([i (sub1 end-i)])
-    (if (>= i 0)
+    (if (>= i start-i)
         (if (pred? (vector-ref vec i))
             i
             (loop (sub1 i)))
@@ -253,7 +267,39 @@
 (define (find-last vec pred?)
   (find-prev vec (vector-length vec) pred?))
 
-;; Returns the length of the contiguous span starting at `start-i` values satisfying `pred`.
+;; Returns the index of the first tile in the contiguous span covering
+;; `middle-i` satisfying `pred?`.
+(define/who (span-start vec middle-i pred? #:start [start-i 0])
+  (unless (pred? (vector-ref vec middle-i))
+    (raise-arguments-error who "tile at the given index does not match predicate"
+                           "index" middle-i
+                           "tile" (vector-ref vec middle-i)
+                           "predicate" pred?
+                           "vector..." vec))
+  (match (find-prev vec middle-i (λ~> pred? not) #:start start-i)
+    [#f start-i]
+    [prev-i (add1 prev-i)]))
+
+;; Returns one more than the index of the last tile in the contiguous span
+;; covering `middle-i` satisfying `pred?`.
+(define/who (span-end vec middle-i pred? #:end [end-i (vector-length vec)])
+  (unless (pred? (vector-ref vec middle-i))
+    (raise-arguments-error who "tile at the given index does not match predicate"
+                           "index" middle-i
+                           "tile" (vector-ref vec middle-i)
+                           "predicate" pred?
+                           "vector..." vec))
+  (match (find-next vec middle-i (λ~> pred? not) #:end end-i)
+    [#f end-i]
+    [next-i next-i]))
+
+(define (span-start+end vec middle-i pred?
+                        #:start [start-i 0]
+                        #:end [end-i (vector-length vec)])
+  (values (span-start vec middle-i pred? #:start start-i)
+          (span-end vec middle-i pred? #:end end-i)))
+
+;; Returns the length of the contiguous span starting at `start-i` values satisfying `pred?`.
 (define (span-length vec start-i pred?)
   (let loop ([i start-i])
     (if (pred? (vector-ref vec i))
@@ -488,8 +534,8 @@
 ;; ~~~~~~~~~~~~~~~~~~~~
 ;; In some situations, using a mega index is too precise: it always
 ;; identifies a specific line. For example, consider the following row:
-;;   █▔X▔▔
-;;   █▁▁▁█
+;;   ■☐☒☐☐
+;;   ■☐☐☐■
 ;; Suppose we want to calculate the minimum number of tiles needed to
 ;; connect the two contiguous filled regions. We cannot specify the location
 ;; of the starting point using a mega index, as it would require picking
@@ -669,11 +715,11 @@
 ;; The returned starting index may be larger than the given start of the hole if
 ;; the region must be placed later to ensure it spans both lines. For example,
 ;; given the row
-;;   ▔▔▔▔▔
-;;   XXX▁▁
+;;   ☐☐☐☐☐
+;;   ☒☒☒☐☐
 ;; then the earliest possible placement for a clue of size 4 is
-;;   ▔███▔
-;;   XXX█▁
+;;   ☐■■■☐
+;;   ☒☒☒■☐
 ;; which necessitates a larger starting index.
 ;;
 ;; Currently, this function does not consider placement restrictions imposed by

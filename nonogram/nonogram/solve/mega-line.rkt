@@ -155,7 +155,8 @@
                 (list next-i)]))]))
 
     ;; board-set!/mega : mega-index? tile? -> void?
-    (define (board-set!/mega mi val #:contradiction-reason [contradiction-reason #f])
+    (define (board-set!/mega mi val
+                             #:contradiction-reason [contradiction-reason (current-contradiction-reason)])
       (tiles-set!/mega board-tiles mi val #:contradiction-reason contradiction-reason)
 
       ; propagate crosses to clues
@@ -173,7 +174,8 @@
     (define clue-tiles-ref/mega (make-clue-tiles-ref/mega clue-tiless))
 
     ;; clue-tiles-set! : clue-index? natural? tile? -> void?
-    (define/who (clue-tiles-set! clue-i i val #:contradiction-reason [contradiction-reason #f])
+    (define/who (clue-tiles-set! clue-i i val
+                                 #:contradiction-reason [contradiction-reason (current-contradiction-reason)])
       (unless (single-line-index? clue-i)
         (raise-arguments-error who "clue index refers to a mega clue"
                                "clue index" clue-i))
@@ -181,12 +183,13 @@
                             #:contradiction-reason contradiction-reason))
 
     (define (clue-tiles-fill! clue-i val [start-i 0] [end-i num-tiles]
-                              #:contradiction-reason [contradiction-reason #f])
+                              #:contradiction-reason [contradiction-reason (current-contradiction-reason)])
       (for ([i (in-range start-i end-i)])
         (clue-tiles-set! clue-i i val #:contradiction-reason contradiction-reason)))
 
     ;; clue-tiles-set!/mega : clue-index? mega-index? tile? -> void?
-    (define/who (clue-tiles-set!/mega clue-i mi val #:contradiction-reason [contradiction-reason #f])
+    (define/who (clue-tiles-set!/mega clue-i mi val
+                                      #:contradiction-reason [contradiction-reason (current-contradiction-reason)])
       (define clue-tiles (clues-ref clue-tiless clue-i))
       (match clue-i
         [(? single-line-index?)
@@ -216,12 +219,12 @@
                            #:contradiction-reason "single-line clue opposes full tile"))))
 
     (define (clue-tiles-fill!/mega clue-i val [start-mi 0] [end-mi num-tiles/mega]
-                                   #:contradiction-reason [contradiction-reason #f])
+                                   #:contradiction-reason [contradiction-reason (current-contradiction-reason)])
       (for ([mi (in-range start-mi end-mi)])
         (clue-tiles-set!/mega clue-i mi val #:contradiction-reason contradiction-reason)))
 
     (define (clue-tiles-fill-line! clue-i line-i val [start-i 0] [end-i num-tiles]
-                                    #:contradiction-reason [contradiction-reason #f])
+                                    #:contradiction-reason [contradiction-reason (current-contradiction-reason)])
       (unless (and (single-line-index? clue-i)
                    (eq? val 'cross)
                    (not (= line-i (single-line-index-line clue-i))))
@@ -287,23 +290,23 @@
              (clue-tiles-fill! clue-i 'cross i (+ i len)))
            (loop (+ i len))]))
 
-      ;; if any boxes are filled...
+      ;; If any boxes are filled...
       (match (find-first clue-tiles tile-full?)
         [#f (void)]
         [first-full-i
          (define last-full-i (find-last clue-tiles tile-full?))
 
-         ;; ...fill in boxes between filled boxes
+         ;; ...fill in boxes between filled boxes.
          (clue-tiles-fill! clue-i 'full first-full-i (add1 last-full-i)
                            #:contradiction-reason "clue is discontiguous")
 
-         ;; ...cross off tiles unreachable due to clue length
+         ;; ...cross off tiles unreachable due to clue length.
          (clue-tiles-fill! clue-i 'cross 0 (- last-full-i (sub1 clue))
                            #:contradiction-reason "clue is too long")
          (clue-tiles-fill! clue-i 'cross (+ first-full-i clue)
                            #:contradiction-reason "clue is too long")
 
-         ;; ...cross off all holes unreachable due to a separating cross
+         ;; ...cross off all holes unreachable due to a separating cross.
          (define prev-cross-i (find-prev clue-tiles first-full-i tile-cross?))
          (when prev-cross-i
            (clue-tiles-fill! clue-i 'cross 0 prev-cross-i))
