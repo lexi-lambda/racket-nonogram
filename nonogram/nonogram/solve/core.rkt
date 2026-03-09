@@ -85,7 +85,8 @@
                                  [natural? natural?]
                                  natural?)]
           [tiles-set!/mega (->* [mutable-mega-tiles/c mega-index? tile?]
-                                [#:contradiction-reason (or/c string? #f)]
+                                [#:track? any/c
+                                 #:contradiction-reason (or/c string? #f)]
                                 void?)]
           [tiles-fill!/mega (->* [mutable-mega-tiles/c tile?]
                                  [mega-index? mega-index?
@@ -402,11 +403,13 @@
     1))
 
 (define/who (tiles-set!/mega tiles mi val
+                             #:track? [track? #t]
                              #:contradiction-reason [contradiction-reason (current-contradiction-reason)])
-  (tiles-set!/track (array-ref tiles (mega-index-line mi))
-                    (mega-index-tile mi)
-                    val
-                    #:contradiction-reason contradiction-reason))
+  (define tile-line (array-ref tiles (mega-index-line mi)))
+  (if track?
+      (tiles-set!/track tile-line (mega-index-tile mi) val
+                        #:contradiction-reason contradiction-reason)
+      (vector-set! tile-line (mega-index-tile mi) val)))
 
 (define (tiles-fill!/mega tiles val [start-mi 0] [end-mi (mega-tiles-length/mega tiles)]
                           #:contradiction-reason [contradiction-reason (current-contradiction-reason)])

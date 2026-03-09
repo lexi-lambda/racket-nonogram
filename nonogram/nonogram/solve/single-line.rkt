@@ -87,17 +87,6 @@
 
     ;; -------------------------------------------------------------------------
 
-    ;; Returns the index of the next clue of length `at-least-len`, starting with
-    ;; index `clue-i`, for which the tile at index `tile-i` is 'empty in its clue
-    ;; tiles.
-    (define (find-next-clue-with-hole-at clue-i tile-i #:at-least-length at-least-len)
-      (for/first ([clue (in-array clues clue-i)]
-                  [clue-tiles (in-array clue-tiless clue-i)]
-                  [i (in-naturals)]
-                  #:when (and (>= clue at-least-len)
-                              (tile-hole? (vector-ref clue-tiles tile-i))))
-        (+ clue-i i)))
-
     ;; Returns whether a clue could be legally placed starting at the given
     ;; `start-i`, checking consistency with both board-tiles and its clue-tiles.
     (define (valid-clue-placement? clue-i start-i

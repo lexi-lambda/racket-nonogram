@@ -55,6 +55,13 @@
       (array (make-empty-tiles)
              (make-empty-tiles)))
 
+    ;; `unassigned-user-tiles` tracks all tiles filled by the user that have not
+    ;; yet been claimed by any clues.
+    (define unassigned-user-tiles (make-empty-tiles/mega))
+    (for ([mi (in-range num-tiles/mega)]
+          #:when (tile-full? (tiles-ref/mega user-tiles mi)))
+      (tiles-set!/mega unassigned-user-tiles mi 'full #:track? #f))
+
     (define board-tiles (make-empty-tiles/mega))
 
     (define clues
@@ -78,6 +85,16 @@
                              ([j (in-range (array-length line-1))])
                     (single-line-index i 1 j)))]
           [_ i])))
+
+    (define mega-clue-indexes
+      (for/array ([(chunk i) (in-indexed (in-array clues))]
+                  #:when (clue? chunk))
+        i))
+
+    (define single-line-clue-indexes
+      (for/array ([clue-i (in-array clue-indexes)]
+                  #:when (single-line-index? clue-i))
+        clue-i))
 
     ;; line-clue-indexes : (or/c 0 1) -> (arrayof (or/c natural? single-line-index?))
     ;; Returns an array like `clue-indexes`, but filtered to the clues that
@@ -157,18 +174,25 @@
     ;; board-set!/mega : mega-index? tile? -> void?
     (define (board-set!/mega mi val
                              #:contradiction-reason [contradiction-reason (current-contradiction-reason)])
-      (tiles-set!/mega board-tiles mi val #:contradiction-reason contradiction-reason)
+      (unless (eq? (tiles-ref/mega board-tiles mi) val)
+        (tiles-set!/mega board-tiles mi val #:contradiction-reason contradiction-reason)
 
-      ; propagate crosses to clues
-      (when (tile-cross? val)
-        (define line-i (mega-index-line mi))
-        (for ([clue-i (in-array (line-clue-indexes line-i))])
-          (clue-tiles-set!/mega clue-i mi 'cross #:contradiction-reason contradiction-reason))))
+        ; propagate crosses to clues
+        (when (tile-cross? val)
+          (define line-i (mega-index-line mi))
+          (for ([clue-i (in-array (line-clue-indexes line-i))])
+            (clue-tiles-set!/mega clue-i mi 'cross #:contradiction-reason contradiction-reason)))))
 
     (define (board-fill!/mega val [start-mi 0] [end-mi num-tiles/mega]
-                              #:contradiction-reason contradiction-reason)
+                              #:contradiction-reason [contradiction-reason (current-contradiction-reason)])
       (for ([mi (in-range start-mi end-mi)])
         (board-set!/mega mi val #:contradiction-reason contradiction-reason)))
+
+    (define (board-fill-line! line-i val [start-i 0] [end-i num-tiles]
+                              #:contradiction-reason [contradiction-reason (current-contradiction-reason)])
+      (for ([i (in-range start-i end-i)])
+        (board-set!/mega (mega-index line-i i) val
+                         #:contradiction-reason contradiction-reason)))
 
     ;; clue-tiles-ref/mega : clue-index? mega-index? -> tile?
     (define clue-tiles-ref/mega (make-clue-tiles-ref/mega clue-tiless))
@@ -190,33 +214,35 @@
     ;; clue-tiles-set!/mega : clue-index? mega-index? tile? -> void?
     (define/who (clue-tiles-set!/mega clue-i mi val
                                       #:contradiction-reason [contradiction-reason (current-contradiction-reason)])
-      (define clue-tiles (clues-ref clue-tiless clue-i))
-      (match clue-i
-        [(? single-line-index?)
-         (define other-line? (not (= (single-line-index-line clue-i) (mega-index-line mi))))
-         (cond
-           [(not (= (single-line-index-line clue-i) (mega-index-line mi)))
-            (when (tile-full? val)
-              (raise-contradiction "filled tile on wrong line for single-line clue"))]
-           [else
-            (define tile-i (mega-index-tile mi))
-            (tiles-set!/track clue-tiles tile-i val #:contradiction-reason contradiction-reason)])]
-        [_
-         (tiles-set!/mega clue-tiles mi val #:contradiction-reason contradiction-reason)])
+      (unless (eq? (clue-tiles-ref/mega clue-i mi) val)
+        (define clue-tiles (clues-ref clue-tiless clue-i))
+        (match clue-i
+          [(? single-line-index?)
+           (define other-line? (not (= (single-line-index-line clue-i) (mega-index-line mi))))
+           (cond
+             [(not (= (single-line-index-line clue-i) (mega-index-line mi)))
+              (when (tile-full? val)
+                (raise-contradiction "filled tile on wrong line for single-line clue"))]
+             [else
+              (define tile-i (mega-index-tile mi))
+              (tiles-set!/track clue-tiles tile-i val #:contradiction-reason contradiction-reason)])]
+          [_
+           (tiles-set!/mega clue-tiles mi val #:contradiction-reason contradiction-reason)])
 
-      ; propagate filled tiles to board and cross other clues
-      (when (tile-full? val)
-        (board-set!/mega mi 'full)
-        (for ([other-i (in-array (line-clue-indexes (mega-index-line mi)))]
-              #:unless (equal? clue-i other-i))
-          (clue-tiles-set!/mega other-i mi 'cross
-                                #:contradiction-reason "tile claimed by multiple clues"))
+        ; propagate filled tiles to board and cross other clues
+        (when (tile-full? val)
+          (tiles-set!/mega unassigned-user-tiles mi 'empty #:track? #f)
+          (board-set!/mega mi 'full)
+          (for ([other-i (in-array (line-clue-indexes (mega-index-line mi)))]
+                #:unless (equal? clue-i other-i))
+            (clue-tiles-set!/mega other-i mi 'cross
+                                  #:contradiction-reason "tile claimed by multiple clues"))
 
-        ; if this is a single-line clue, cross opposite tiles
-        (when (single-line-index? clue-i)
-          (define opposite-mi (opposite mi))
-          (board-set!/mega opposite-mi 'cross
-                           #:contradiction-reason "single-line clue opposes full tile"))))
+          ; if this is a single-line clue, cross opposite tiles
+          (when (single-line-index? clue-i)
+            (define opposite-mi (opposite mi))
+            (board-set!/mega opposite-mi 'cross
+                             #:contradiction-reason "single-line clue opposes full tile")))))
 
     (define (clue-tiles-fill!/mega clue-i val [start-mi 0] [end-mi num-tiles/mega]
                                    #:contradiction-reason [contradiction-reason (current-contradiction-reason)])
@@ -374,8 +400,6 @@
         (when (= line-first-hole-i line-last-hole-i)
           (clue-tiles-set!/mega clue-i (mega-index line-i line-first-hole-i) 'full)))
 
-      
-
       ;; If any boxes are filled...
       (match (find-first/mega clue-tiles tile-full?)
         [#f (void)]
@@ -462,8 +486,8 @@
             ;;
             ;;   1. If the earliest/latest placement overlaps with an existing
             ;;      filled-in tile, we want to “extend” the filled region to the
-            ;;      placement’s bound. For example, suppose we a mega 5 clue in
-            ;;      the following row:
+            ;;      placement’s bound. For example, suppose we have a mega 5
+            ;;      clue in the following row:
             ;;        ☒☒☒☐☐
             ;;        ☐■☐☐☐
             ;;      Since the earliest placement’s end bound is larger than the
@@ -634,29 +658,67 @@
 
     (define (propagate-information-from-user)
       ;; Fill in tiles filled by the user that can only belong to one clue.
-      (for ([mi (in-range num-tiles/mega)]
-            #:when (tile-full? (tiles-ref/mega user-tiles mi)))
-        (define clue-is (line-clue-indexes (mega-index-line mi)))
-        (define first-clue-ii
-          (for/or ([(clue-i clue-ii) (in-indexed (in-array clue-is))])
-            (cond
-              ;; Fill the tile if it touches any of this clue’s filled tiles.
-              [(clue-neighbor-full? clue-i mi)
-               (clue-tiles-set!/mega clue-i mi 'full
-                                     #:contradiction-reason "user tile borders clue that cannot claim it")
-               #t]
-              [else
-               (and (tile-hole? (clue-tiles-ref/mega clue-i mi))
-                    clue-ii)])))
+      ;; Also, check whether the tiles must belong to a mega clue or to a single
+      ;; clue and cross out tiles as appropriate.
+      (let loop ([start-mi 0])
+        (match (find-next/mega unassigned-user-tiles start-mi tile-full?)
+          [#f (void)]
+          [full-start-mi
+           (define-values [full-size full-end-mi]
+             (connected-region-size+end/mega unassigned-user-tiles full-start-mi tile-full?))
+           (define mega-only?
+             (connected-region-spans-both-lines? full-start-mi full-end-mi full-size))
+           (define relevant-clue-indexes
+             (cond
+               [mega-only?
+                (for ([clue-i (in-array single-line-clue-indexes)])
+                  (clue-tiles-fill!/mega clue-i 'cross full-start-mi full-end-mi
+                                         #:contradiction-reason "single line clue would span both lines"))
+                mega-clue-indexes]
+               [else
+                (line-clue-indexes (mega-index-line full-start-mi))]))
 
-        (match first-clue-ii
-          [#t (void)]
-          [#f (raise-contradiction "tile filled by user cannot belong to any clues")]
-          [_  (unless (for/first ([clue-i (in-array clue-is (add1 first-clue-ii))]
-                                  #:when (tile-hole? (clue-tiles-ref/mega clue-i mi)))
-                        #t)
-                (define first-clue-i (array-ref clue-is first-clue-ii))
-                (clue-tiles-set!/mega first-clue-i mi 'full))])))
+           (define candidate-clue-is
+             (for/fold ([candidate-clue-is '()])
+                       ([clue-i (in-array relevant-clue-indexes)])
+               (define compatibility
+                 (for/or ([full-mi (in-range full-start-mi full-end-mi)]
+                          #:when (tile-full? (tiles-ref/mega unassigned-user-tiles full-mi)))
+                   (cond
+                     [(tile-cross? (clue-tiles-ref/mega clue-i full-mi))
+                      'cannot-claim]
+                     [(clue-neighbor-full? clue-i full-mi)
+                      'must-claim]
+                     [else #f])))
+               #:final (eq? compatibility 'must-claim)
+               (match compatibility
+                 ['cannot-claim
+                  (clue-tiles-fill!/mega clue-i 'cross full-start-mi full-end-mi
+                                         #:contradiction-reason "user tile borders clue that cannot claim it")
+                  candidate-clue-is]
+                 ['must-claim (list clue-i)]
+                 [#f (cons clue-i candidate-clue-is)])))
+
+           (match candidate-clue-is
+             ['()
+              (raise-contradiction "tile filled by user cannot belong to any clues")]
+             [(list candidate-clue-i)
+              (for ([full-mi (in-range full-start-mi full-end-mi)]
+                    #:when (tile-full? (tiles-ref/mega unassigned-user-tiles full-mi)))
+                (clue-tiles-set!/mega candidate-clue-i full-mi 'full
+                                      #:contradiction-reason "user tile borders clue that cannot claim it"))]
+             [_
+              ;; TODO: Intersect possible placements a la the single-line solver.
+              (define single-only? (for/and ([clue-i (in-list candidate-clue-is)])
+                                     (single-line-index? clue-i)))
+              (when single-only?
+                (board-fill-line! (opposite (mega-index-line full-start-mi))
+                                  'cross
+                                  (mega-index-tile full-start-mi)
+                                  (mega-index-tile (add1 full-end-mi))
+                                  #:contradiction-reason "single-line clue opposes full tile"))])
+
+           (loop (add1 full-end-mi))])))
 
     ;; -------------------------------------------------------------------------
 
@@ -731,7 +793,19 @@
   (check-equal? (solve-line/mega '(4) #(#(cross empty empty)
                                         #(full  empty empty)))
                 #(#(cross empty empty)
-                  #(full  full  empty))))
+                  #(full  full  empty)))
+
+  (check-equal? (solve-line/mega '(3 4 #[(1 1) ()])
+                                 #(#(empty empty empty empty empty empty empty empty)
+                                   #(full  cross full  full  full  cross cross cross)))
+                #(#(full full  cross full cross full  cross full)
+                  #(full cross full  full full  cross cross cross)))
+
+  (check-equal? (solve-line/mega '(#[(2 1) (2)] 4)
+                                 #(#(empty empty empty full  empty empty empty empty empty empty)
+                                   #(empty empty empty empty empty full  empty empty empty cross)))
+                #(#(empty empty empty full  empty empty empty empty empty empty)
+                  #(empty empty empty cross empty full  empty empty empty cross))))
 
 ;; -----------------------------------------------------------------------------
 
