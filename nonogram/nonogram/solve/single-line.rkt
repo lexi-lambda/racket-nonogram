@@ -129,18 +129,19 @@
            (span-start clue-tiles start-i tile-hole? #:start (max 0 (- start-i (- clue len)))))
          (define max-placement-end-i
            (span-end clue-tiles (sub1 end-i) tile-hole? #:end (min num-tiles (+ end-i (- clue len)))))
+         (define max-placement-start-i (- max-placement-end-i clue))
 
          (define (get-earliest)
-           (for/first ([i (in-range min-placement-start-i max-placement-end-i)]
+           (for/first ([i (in-inclusive-range min-placement-start-i max-placement-start-i)]
                        #:when (valid-clue-placement? clue-i i #:already-checked-span? #t))
              i))
 
          (define (get-latest [start-i min-placement-start-i])
-           (for/first ([i (in-inclusive-range (sub1 max-placement-end-i) start-i -1)]
+           (for/first ([i (in-inclusive-range max-placement-start-i start-i -1)]
                        #:when (valid-clue-placement? clue-i i #:already-checked-span? #t))
              i))
 
-         (and (<= clue (- max-placement-end-i min-placement-start-i))
+         (and (>= max-placement-start-i min-placement-start-i)
               (match which
                 ['earliest (get-earliest)]
                 ['latest (get-latest)]
@@ -433,6 +434,10 @@
 (module+ test
   (check-equal? (solve-line '(1 2 1) #(empty empty empty empty empty empty))
                 #(full cross full full cross full))
+  (check-equal? (solve-line '(1 3) #(empty empty full empty full empty empty))
+                #(empty cross full empty full empty empty))
+  (check-equal? (solve-line '(3 1) #(empty empty full empty full empty empty))
+                #(empty empty full empty full cross empty))
   (check-equal? (solve-line '(4 1) #(empty empty empty full full empty full))
                 #(cross full full full full cross full)))
 
