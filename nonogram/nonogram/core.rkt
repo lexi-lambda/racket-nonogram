@@ -8,6 +8,7 @@
          racket/string
          threading
          toolbox/who
+         xml
          "array.rkt")
 
 (module+ example
@@ -83,7 +84,8 @@
            (-> puzzle? axis? (arrayof (cons/c line-clues? (or/c tile-line? mega-tile-line?))))]
 
           [parse-puzzle-nonograms.com-clues (-> string? natural? board-clues?)]
-          [parse-nonograms.org-solution (-> string? board?)]))
+          [parse-nonograms.org-solution (-> string? board?)]
+          [parse-pbnsolve-solution (-> string? board?)]))
 
 ;; -----------------------------------------------------------------------------
 
@@ -661,3 +663,33 @@
                          #(cross cross full full)
                          #(full  full  full cross)
                          #(full  cross full cross)))))
+
+;; Parses a puzzle in the XML format described at <https://webpbn.com/pbn_fmt.html>.
+;; Assumes that a solution image is included, and that it uses `.` for empty
+;; cells and `X` for full cells.
+(define (parse-pbnsolve-solution str)
+  (define ((element-named? name) v)
+    (and (element? v)
+         (eq? (element-name v) name)))
+
+  (define (find-element-content vs name)
+    (element-content (findf (element-named? name) vs)))
+
+  (define doc (read-xml (open-input-string str)))
+  (define row-strs
+    (~> (element-content (document-element doc))
+        (find-element-content 'puzzle)
+        (find-element-content 'solution)
+        (find-element-content 'image)
+        (map pcdata-string _)
+        (string-join "")
+        (regexp-match* #px"\\|([.X]+)\\|" _ #:match-select second)))
+
+  (define height (length row-strs))
+  (define width (string-length (first row-strs)))
+  (board
+   (for/array #:length height ([row-str (in-list row-strs)])
+     (for/array #:length width ([cell-char (in-string row-str)])
+       (match cell-char
+         [#\. 'empty]
+         [#\X 'full])))))

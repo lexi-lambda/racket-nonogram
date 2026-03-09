@@ -281,24 +281,28 @@
 
 (module+ main
   (require racket/cmdline
+           "array.rkt"
            (submod "core.rkt" example))
 
   (define log-timings? #f)
-  (define what-to-do '(play "S5 M001"))
+  (define what-to-do #f)
   (command-line
    #:once-any
    ["--puzzle" name
     "Play puzzle named <name>"
-    (set! what-to-do (list 'play name))]
+    (set! what-to-do (array 'play name))]
    ["--list-puzzles"
     "List all available puzzles"
     (set! what-to-do 'list-puzzles)]
    ["--load-puzzle-no" puzzle-string
     "Load puzzle encoded in the nonograms.org format"
-    (set! what-to-do (list 'load/no puzzle-string))]
+    (set! what-to-do (array 'load/no puzzle-string))]
+   ["--load-puzzle-pbn" puzzle-string
+    "Load puzzle encoded in the pbnsolve XML format provided by webpbn.com"
+    (set! what-to-do (array 'load/pbn puzzle-string))]
    ["--load-puzzle-pnc" puzzle-string columns
     "Load puzzle encoded in the puzzle-nonograms.com format"
-    (set! what-to-do (list 'load/pnc puzzle-string columns))]
+    (set! what-to-do (array 'load/pnc puzzle-string columns))]
    #:once-each
    ["--debug-log-timings"
     "Log timings during puzzle analyze and render"
@@ -322,16 +326,19 @@
     ['list-puzzles
      (eprintf "Available puzzles:\n")
      (print-puzzle-list)]
-    [(list 'play puzzle-name)
+    [(array 'play puzzle-name)
      (define pz (get-puzzle puzzle-name))
      (unless pz
        (eprintf "No puzzle named ~v." puzzle-name)
        (exit 1))
      (run pz)]
-    [(list 'load/no pz-str)
+    [(array 'load/no pz-str)
      (define solution (parse-nonograms.org-solution pz-str))
      (run (solved-board->puzzle solution))]
-    [(list 'load/pnc pz-str cols-str)
+    [(array 'load/pbn pz-str)
+     (define solution (parse-pbnsolve-solution pz-str))
+     (run (solved-board->puzzle solution))]
+    [(array 'load/pnc pz-str cols-str)
      (define cols (string->number cols-str))
      (define clues (parse-puzzle-nonograms.com-clues pz-str cols))
      (run (clues->puzzle clues))])
