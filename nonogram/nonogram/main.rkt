@@ -170,6 +170,27 @@
          (send refresh-timer stop)))))
 
   (define base-size (get-base-puzzle-size initial-puzzle))
+  (define wld (make-world initial-puzzle))
+
+  (define (set-world! new-wld)
+    (unless (equal? wld new-wld)
+      (set! wld new-wld)
+      (send canvas need-refresh!)))
+
+  (define update-thread
+    (thread
+     (λ ()
+       (let loop ()
+         (match (thread-receive)
+           [(cons 'mouse-event args)
+            (set-world! (apply on-mouse-event wld args))]
+           [(cons 'keyboard-event args)
+            (set-world! (apply on-keyboard-event wld args))])
+         (loop)))))
+
+  (define (enqueue-update! msg)
+    (thread-send update-thread msg))
+
   (define canvas
     (new
      (class canvas%
@@ -181,7 +202,6 @@
        (define needs-refresh? #t)
        (define mouse-location #f)
 
-       (define wld (make-world initial-puzzle))
        (define puzzle-renderer #f)
        (define tf:canvas-to-render tf:identity)
 
@@ -193,37 +213,35 @@
            (match event-type
              ['motion
               (set! mouse-location location)
-              (set! needs-refresh? #t)]
+              (need-refresh!)]
              ['leave
               (set! mouse-location #f)
-              (set! needs-refresh? #t)]
+              (need-refresh!)]
              [_ (void)])
 
            (define tile-point (send puzzle-renderer get-tile-at
                                     (tf* tf:canvas-to-render location)))
            (when (or tile-point (memq event-type '(left-up middle-up right-up)))
-             (set-world!
-              (on-mouse-event wld
-                              event-type
-                              (event->modifier-keys event)
-                              (and~> tile-point point-x)
-                              (and~> tile-point point-y))))))
+             (enqueue-update!
+              (list 'mouse-event
+                    event-type
+                    (event->modifier-keys event)
+                    (and~> tile-point point-x)
+                    (and~> tile-point point-y))))))
 
        (define/override (on-char event)
          (define-values [event-type key-code]
            (match (send event get-key-code)
              ['release (values 'release (send event get-key-release-code))]
              [key-code (values 'press key-code)]))
-         (set-world!
-          (on-keyboard-event wld
-                             event-type
-                             key-code
-                             (event->modifier-keys event))))
+         (enqueue-update!
+          (list 'keyboard-event
+                event-type
+                key-code
+                (event->modifier-keys event))))
 
-       (define/private (set-world! new-wld)
-         (unless (equal? wld new-wld)
-           (set! wld new-wld)
-           (set! needs-refresh? #t)))
+       (define/public (need-refresh!)
+         (set! needs-refresh? #t))
 
        (define/private (update-renderer!)
          (define backing-scale (send (get-dc) get-backing-scale))
