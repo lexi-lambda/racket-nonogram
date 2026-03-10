@@ -20,12 +20,14 @@
 (struct world
   (puzzle
    board-analysis
-   drag-mode)
+   drag-mode
+   render-cursor?)
   #:transparent)
 
 (define (make-world puzzle)
   (world puzzle
          (analyze-puzzle puzzle)
+         #f
          #f))
 
 (struct modifier-keys
@@ -116,27 +118,44 @@
 ;; on-keyboard-event : world? (or/c 'press 'release) (or/c char? key-code-symbol?) modifier-keys? -> world?
 (define (on-keyboard-event wld event-type key-code modifiers)
   (define timing-end (timing-start 'on-keyboard-event))
-  (match event-type
-    ['press
-     (define old-puzzle (world-puzzle wld))
-     (define new-puzzle
+
+  (define (process-ui wld)
+    (match event-type
+      ['press
        (match key-code
-         ['f1 (solve-puzzle-axis old-puzzle 'row)]
-         ['f2 (solve-puzzle-axis old-puzzle 'column)]
-         ['f3 (solve-puzzle old-puzzle)]
-         ['f12
-          (struct-copy puzzle old-puzzle
-                       [board (board-clear (puzzle-board old-puzzle))])]
-         [_ old-puzzle]))
-     (cond
-       [(equal? old-puzzle new-puzzle) wld]
-       [else
-        (define new-board-analysis (analyze-puzzle new-puzzle))
-        (timing-end)
-        (struct-copy world wld
-                     [puzzle new-puzzle]
-                     [board-analysis new-board-analysis])])]
-    [_ wld]))
+         [(or #\m #\M)
+          (struct-copy world wld
+                       [render-cursor? (not (world-render-cursor? wld))])]
+         [_ wld])]
+      [_ wld]))
+
+  (define (process-solver wld)
+    (match event-type
+      ['press
+       (define old-puzzle (world-puzzle wld))
+       (define new-puzzle
+         (match key-code
+           ['f1 (solve-puzzle-axis old-puzzle 'row)]
+           ['f2 (solve-puzzle-axis old-puzzle 'column)]
+           ['f3 (solve-puzzle old-puzzle)]
+           ['f12
+            (struct-copy puzzle old-puzzle
+                         [board (board-clear (puzzle-board old-puzzle))])]
+           [_ old-puzzle]))
+       (cond
+         [(equal? old-puzzle new-puzzle) wld]
+         [else
+          (define new-board-analysis (analyze-puzzle new-puzzle))
+          (struct-copy world wld
+                       [puzzle new-puzzle]
+                       [board-analysis new-board-analysis])])]
+      [_ wld]))
+
+  (begin0
+    (~> wld
+        process-ui
+        process-solver)
+    (timing-end)))
 
 ;; -----------------------------------------------------------------------------
 
@@ -244,10 +263,11 @@
          (draw-pict rendered-p dc (point-x render-loc) (point-y render-loc))
          (timing-end)
 
-         (match mouse-location
-           [(point x y)
-            (draw-pict (cellophane (colorize (disk 10) "red") 0.5) dc (- x 5) (- y 5))]
-           [_ (void)]))
+         (when (world-render-cursor? wld)
+           (match mouse-location
+             [(point x y)
+              (draw-pict (cellophane (colorize (disk 10) "red") 0.5) dc (- x 5) (- y 5))]
+             [_ (void)])))
 
        (define/public (do-refresh)
          (collect-garbage 'incremental)
