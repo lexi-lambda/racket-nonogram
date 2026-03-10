@@ -181,11 +181,14 @@
     (thread
      (λ ()
        (let loop ()
-         (match (thread-receive)
-           [(cons 'mouse-event args)
-            (set-world! (apply on-mouse-event wld args))]
-           [(cons 'keyboard-event args)
-            (set-world! (apply on-keyboard-event wld args))])
+         (with-handlers ([exn:fail?
+                          (λ (exn)
+                            ((error-display-handler) (exn-message exn) exn))])
+           (match (thread-receive)
+             [(cons 'mouse-event args)
+              (set-world! (apply on-mouse-event wld args))]
+             [(cons 'keyboard-event args)
+              (set-world! (apply on-keyboard-event wld args))]))
          (loop)))))
 
   (define (enqueue-update! msg)
@@ -270,7 +273,9 @@
 
        (define/private (paint dc)
          (update-renderer!)
-         (define rendered-p (send puzzle-renderer get-render))
+         (define rendered-p (send puzzle-renderer get-render
+                                  (and~> mouse-location
+                                         (tf* tf:canvas-to-render _))))
 
          (define centered-p (cc-superimpose (get-bounds-pict) rendered-p))
          (define render-loc (truncate-point (pict-child-point centered-p rendered-p)))

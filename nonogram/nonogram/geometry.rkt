@@ -12,6 +12,7 @@
           (struct point ([x real?] [y real?]))
           [point- (-> point? point? ... point?)]
           [truncate-point (-> point? integer-point?)]
+          [floor-point (-> point? integer-point?)]
           [pict-child-point (->* [pict? pict?] [pict-finder/c] point?)]
 
           (struct size ([width real?] [height real?]))
@@ -49,7 +50,8 @@
                          (-> point? transformation?)
                          (-> real? real? transformation?))]
           [tf:scale (->* [real?] [real?] transformation?)]
-          [tf:world-to-child (-> pict? pict? transformation?)]))
+          [tf:world-to-child (-> pict? pict? transformation?)]
+          [tf:child-to-world (-> pict? pict? transformation?)]))
 
 ;; -----------------------------------------------------------------------------
 
@@ -74,6 +76,10 @@
 (define (truncate-point p)
   (point (inexact->exact (truncate (point-x p)))
          (inexact->exact (truncate (point-y p)))))
+
+(define (floor-point p)
+  (point (inexact->exact (floor (point-x p)))
+         (inexact->exact (floor (point-y p)))))
 
 (define (pict-child-point parent child [find lt-find])
   (define-values [x y] (find parent child))
@@ -234,3 +240,12 @@
   (tf* (tf:scale (/ (pict-width child) world-width)
                  (/ (pict-height child) world-height))
        (tf:translate (- x1) (- y1))))
+
+(define (tf:child-to-world world child)
+  (define-values [x1 y1] (lt-find world child))
+  (define-values [x2 y2] (rb-find world child))
+  (define world-width (exact->inexact (- x2 x1)))
+  (define world-height (exact->inexact (- y2 y1)))
+  (tf* (tf:translate x1 y1)
+       (tf:scale (/ world-width (pict-width child))
+                 (/ world-height (pict-height child)))))

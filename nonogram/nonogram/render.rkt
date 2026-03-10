@@ -32,7 +32,7 @@
             [get-backing-scale (->m real?)]
 
             [update! (->m puzzle? (or/c board-analysis? #f) void?)]
-            [get-render (->m pict?)]
+            [get-render (->*m [] [(or/c point? #f)] pict?)]
             [get-tile-at (->m point? (or/c integer-point? #f))])]))
 
 ;; -----------------------------------------------------------------------------
@@ -123,6 +123,8 @@
 (define GRID-BORDER-WIDTH 2)
 (define GRID-TILE-RADIUS 2)
 
+(define CURSOR-COLOR (make-color #x3d #x7b #xe0))
+
 ;; -----------------------------------------------------------------------------
 
 (define renderer%
@@ -164,6 +166,11 @@
       (colorize TILE-MARK-COLOR)
       (linewidth TILE-SYMBOL-THICKNESS _)
       (inset 1)))
+
+(define tile-cursor
+  (rounded-rectangle TILE-SIZE TILE-SIZE GRID-TILE-RADIUS
+                     #:border-color CURSOR-COLOR
+                     #:border-width GRID-BORDER-WIDTH))
 
 (define board-renderer%
   (class renderer%
@@ -351,10 +358,22 @@
         (set! board-analysis new-board-analysis)
         (set! rendered-puzzle #f)))
 
-    (define/public (get-render)
+    (define/public (get-render [mouse-location #f])
       (unless rendered-puzzle
         (render!))
-      rendered-puzzle)
+      (match (and~> mouse-location get-tile-at)
+        [#f rendered-puzzle]
+        [tile-location
+         (match-define (point tile-x tile-y)
+           (tf* (tf:child-to-world rendered-puzzle board-pict)
+                (tf:translate (/ GRID-BORDER-WIDTH 2)
+                              (/ GRID-BORDER-WIDTH 2))
+                (tf:scale TILE-SIZE)
+                tile-location))
+         (pin-over rendered-puzzle
+                   tile-x
+                   tile-y
+                   (scale tile-cursor output-scale))]))
 
     (define/public (get-size)
       (pict-size (get-render)))
@@ -364,8 +383,10 @@
 
       (define w-to-c (tf:world-to-child rendered-puzzle board-pict))
       (match-define (and tile-location (point tile-x tile-y))
-        (truncate-point
-         (tf* (tf:scale (/ 1 TILE-SIZE))
+        (floor-point
+         (tf* (tf:scale (/ TILE-SIZE))
+              (tf:translate (/ GRID-BORDER-WIDTH -2)
+                            (/ GRID-BORDER-WIDTH -2))
               w-to-c
               mouse-location)))
 
