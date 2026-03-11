@@ -493,18 +493,17 @@
 
 (module+ main
   (require racket/cmdline
-           toolbox/who
+           racket/string
            "array.rkt"
            (submod "core.rkt" example))
 
-  (define/who (string->ws-url str)
-    (define base-url (string->url str))
-    (match (url-scheme base-url)
-      [#f (struct-copy url base-url [scheme "ws"])]
-      [(or "ws" "wss") base-url]
-      [scheme
-       (raise-arguments-error who "not a valid WebSocket URL"
-                              "url" base-url)]))
+  (define (connect-string->ws-url str)
+    (match (string-split str ":")
+      [(list host port)
+       (url "ws" #f host (string->number port) #t (list (path/param "" '())) '() #f)]
+      [_
+       (eprintf "error: Argument to --connect must have the form <host:port>.\n")
+       (exit 1)]))
 
   (define log-timings? #f)
   (define what-to-do #f)
@@ -527,9 +526,9 @@
    ["--load-puzzle-pnc" puzzle-string columns
     "Load puzzle encoded in the puzzle-nonograms.com format"
     (set! what-to-do (array 'load/pnc puzzle-string columns))]
-   ["--connect" url
-    "Connect to a server listening with --serve at URL <url>"
-    (set! what-to-do (array 'connect (string->ws-url url)))]
+   ["--connect" host:port
+    "Connect to a server listening with --serve on <host:port>"
+    (set! what-to-do (array 'connect (connect-string->ws-url host:port)))]
    #:once-each
    ["--serve" port
     "Start a server on <port> for others to connect to"
@@ -558,7 +557,7 @@
 
   (match what-to-do
     [#f
-     (eprintf "No puzzle selected. Please select one of the following puzzles with `--puzzle <name>`:\n")
+     (eprintf "error: No puzzle selected. Please select one of the following puzzles with `--puzzle <name>`:\n")
      (print-puzzle-list)
      (exit 1)]
     ['list-puzzles
@@ -567,7 +566,7 @@
     [(array 'play puzzle-name)
      (define pz (get-puzzle puzzle-name))
      (unless pz
-       (eprintf "No puzzle named ~v.\n" puzzle-name)
+       (eprintf "error: No puzzle named ~v.\n" puzzle-name)
        (exit 1))
      (do-run (make-world pz))]
     [(array 'load/no pz-str)
@@ -582,7 +581,7 @@
      (do-run (make-world (clues->puzzle clues)))]
     [(array 'connect connect-url)
      (when listen-port
-       (eprintf "Cannot combine --connect with --serve.\n")
+       (eprintf "error: Cannot combine --connect with --serve.\n")
        (exit 1))
 
      (define conn (ws-connect connect-url))
