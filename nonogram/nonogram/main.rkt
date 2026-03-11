@@ -1,11 +1,21 @@
 #lang racket/base
 
-(require pict
+(require file/gunzip
+         file/gzip
+         net/rfc6455
+         net/url
+         pict
          racket/class
          racket/contract
+         racket/fasl
          racket/gui/base
          racket/match
+         racket/path
+         racket/port
+         racket/runtime-path
+         racket/serialize
          threading
+         toolbox/list
          toolbox/logging
          "core.rkt"
          "geometry.rkt"
@@ -15,20 +25,48 @@
 
 ;; -----------------------------------------------------------------------------
 
-(define drag-mode? (or/c #f tile? 'unmark))
+(define-runtime-path nonogram-dir ".")
 
-(struct world
+(serializable-struct world
   (puzzle
-   board-analysis
-   drag-mode
-   render-cursor?)
+   cursor-locations)
   #:transparent)
 
 (define (make-world puzzle)
-  (world puzzle
-         (analyze-puzzle puzzle)
-         #f
-         #f))
+  (world puzzle (hasheqv)))
+
+(define drag-mode? (or/c #f tile? 'unmark))
+
+(struct client-state
+  (client-id
+   world
+   board-analysis
+   drag-mode)
+  #:transparent)
+
+(define (make-client-state client-id wld)
+  (client-state client-id
+                wld
+                (analyze-puzzle (world-puzzle wld))
+                #f))
+
+(serializable-struct action () #:transparent)
+(serializable-struct a:set-puzzle action (puzzle) #:transparent)
+(serializable-struct a:set-tile action (location tile) #:transparent)
+(serializable-struct a:move-cursor action (location) #:transparent)
+(struct a:local action (proc) #:transparent)
+
+(define (a:set-board-analysis new-analysis)
+  (a:local (λ (cs) (struct-copy client-state cs [board-analysis new-analysis]))))
+(define (a:set-drag-mode new-mode)
+  (a:local (λ (cs) (struct-copy client-state cs [drag-mode new-mode]))))
+
+(define (echo-action? action)
+  (match action
+    [(or (? a:set-puzzle?) (? a:set-tile?)) #t]
+    [(? a:move-cursor?) #f]))
+
+;; -----------------------------------------------------------------------------
 
 (struct modifier-keys
   (shift-down?
@@ -45,8 +83,9 @@
      [_       (or (send event get-alt-down)
                   (send event get-meta-down))])))
 
-;; drag-mode? board? natural? natural? -> board?
-(define (on-mouse-drag mode old-board tile-x tile-y)
+;; on-mouse-drag : drag-mode? board? integer-point? -> (listof action?)
+(define (on-mouse-drag mode old-board tile-loc)
+  (match-define (point tile-x tile-y) tile-loc)
   (define old-tile (board-ref old-board tile-x tile-y))
   (define new-tile
     (match* {mode old-tile}
@@ -56,12 +95,26 @@
       [{'cross  (or 'empty 'mark)} 'cross]
       [{'mark   'empty           } 'mark]
       [{_       _                } old-tile]))
-  (board-set old-board tile-x tile-y new-tile))
+  (unless/list (equal? old-tile new-tile)
+    (a:set-tile tile-loc new-tile)))
 
-;; world? mouse-event-type? modifier-keys? (or/c natural? #f) (or/c natural? #f) -> world?
-(define (on-mouse-event wld1 event-type modifiers tile-x tile-y)
-  (define timing-end (timing-start 'on-mouse-event))
+;; on-mouse-event : client-state?
+;;                  mouse-event-type?
+;;                  modifier-keys?
+;;                  (or/c integer-point? #f)
+;;               -> (listof action?)
+(define (on-mouse-event cs event-type modifiers tile-loc)
+  (define client-id (client-state-client-id cs))
+  (define wld (client-state-world cs))
+  (define pz (world-puzzle wld))
+  (define cursors (world-cursor-locations wld))
 
+  ;; process cursor changes
+  (define cursor-actions
+    (unless/list (equal? (hash-ref cursors client-id #f) tile-loc)
+      (a:move-cursor tile-loc)))
+
+  ;; process drag mode changes
   (match-define (modifier-keys shift? control? alt?) modifiers)
   (define action-type
     (match* {event-type shift? control? alt?}
@@ -75,12 +128,12 @@
       [{'motion _ _ _} 'drag]
       [{_ _ _ _} #f]))
 
-  ;; process drag mode changes
-  (define wld2
+  (define-values [drag-update? drag-mode]
     (match action-type
       [(list 'start start-type)
-       (define pp (world-puzzle wld1))
-       (define old-board (puzzle-board pp))
+       #:when tile-loc
+       (match-define (point tile-x tile-y) tile-loc)
+       (define old-board (puzzle-board pz))
        (define old-tile (board-ref old-board tile-x tile-y))
        (define new-drag-mode
          (match* {old-tile start-type}
@@ -89,47 +142,34 @@
            [{'empty            'mark } 'mark]
            [{'mark             'mark } 'unmark]
            [{(or 'full 'cross) _     } 'empty]))
-       (struct-copy world wld1 [drag-mode new-drag-mode])]
+       (values #t new-drag-mode)]
       ['end
-       (struct-copy world wld1 [drag-mode #f])]
-      [_ wld1]))
+       (values #t #f)]
+      [_
+       (values #f (client-state-drag-mode cs))]))
 
-  ;; handle mouse down event board changes
-  (match action-type
-    [(or (list 'start _) 'drag)
-     #:when (world-drag-mode wld2)
-     (define drag-mode (world-drag-mode wld2))
-     (define old-puzzle (world-puzzle wld2))
-     (define old-board (puzzle-board old-puzzle))
-     (define new-board (on-mouse-drag drag-mode old-board tile-x tile-y))
-     (cond
-       [(equal? old-board new-board)
-        wld2]
-       [else
-        (define new-puzzle (struct-copy puzzle old-puzzle [board new-board]))
-        (define new-board-analysis
-          (reanalyze-lines-at new-puzzle (world-board-analysis wld2) (point tile-x tile-y)))
-        (timing-end)
-        (struct-copy world wld2
-                     [puzzle new-puzzle]
-                     [board-analysis new-board-analysis])])]
-    [_ wld2]))
+  ;; process board changes
+  (define board-actions
+    (match action-type
+      [(or (list 'start _) 'drag)
+       #:when (and drag-mode tile-loc)
+       (define old-puzzle pz)
+       (define old-board (puzzle-board old-puzzle))
+       (on-mouse-drag drag-mode old-board tile-loc)]
+      [_ '()]))
 
-;; on-keyboard-event : world? (or/c 'press 'release) (or/c char? key-code-symbol?) modifier-keys? -> world?
-(define (on-keyboard-event wld event-type key-code modifiers)
+  (append
+   cursor-actions
+   (when/list drag-update?
+     (a:set-drag-mode drag-mode))
+   board-actions))
+
+;; on-keyboard-event : client-state? (or/c 'press 'release) (or/c char? key-code-symbol?) modifier-keys? -> (listof action?)
+(define (on-keyboard-event cs event-type key-code modifiers)
   (define timing-end (timing-start 'on-keyboard-event))
+  (define wld (client-state-world cs))
 
-  (define (process-ui wld)
-    (match event-type
-      ['press
-       (match key-code
-         [(or #\m #\M)
-          (struct-copy world wld
-                       [render-cursor? (not (world-render-cursor? wld))])]
-         [_ wld])]
-      [_ wld]))
-
-  (define (process-solver wld)
+  (define (process-solver)
     (match event-type
       ['press
        (define old-puzzle (world-puzzle wld))
@@ -142,24 +182,85 @@
             (struct-copy puzzle old-puzzle
                          [board (board-clear (puzzle-board old-puzzle))])]
            [_ old-puzzle]))
-       (cond
-         [(equal? old-puzzle new-puzzle) wld]
-         [else
-          (define new-board-analysis (analyze-puzzle new-puzzle))
-          (struct-copy world wld
-                       [puzzle new-puzzle]
-                       [board-analysis new-board-analysis])])]
-      [_ wld]))
+       (unless/list (equal? old-puzzle new-puzzle)
+         (a:set-puzzle new-puzzle))]
+      [_ '()]))
 
   (begin0
-    (~> wld
-        process-ui
-        process-solver)
+    (process-solver)
     (timing-end)))
+
+;; perform-action : client-state? client-id? action? -> client-state?
+(define (perform-action cs client-id action)
+  (match action
+    [(a:set-puzzle pz)
+     (struct-copy client-state cs
+       [world (struct-copy world (client-state-world cs)
+                [puzzle pz])]
+       [board-analysis (analyze-puzzle pz)])]
+
+    [(a:set-tile (and loc (point x y)) tile)
+     (define old-wld (client-state-world cs))
+     (define old-pz (world-puzzle old-wld))
+     (define new-pz (struct-copy puzzle old-pz
+                      [board (board-set (puzzle-board old-pz) x y tile)]))
+     (struct-copy client-state cs
+       [world (struct-copy world old-wld
+                [puzzle new-pz])]
+       [board-analysis
+        (reanalyze-lines-at new-pz
+                            (client-state-board-analysis cs)
+                            loc)])]
+
+    [(a:move-cursor loc)
+     (define wld (client-state-world cs))
+     (struct-copy client-state cs
+       [world (struct-copy world wld
+                [cursor-locations
+                 (~> (world-cursor-locations wld)
+                     (cond~>
+                      [loc  (hash-set client-id loc)]
+                      [else (hash-remove client-id)]))])])]
+
+    [(a:local proc)
+     (proc cs)]))
 
 ;; -----------------------------------------------------------------------------
 
-(define (run initial-puzzle)
+(define (gzip-bytes in-bs)
+  (call-with-output-bytes
+   (λ (out)
+     (gzip-through-ports (open-input-bytes in-bs)
+                         out
+                         #f
+                         (current-seconds)))))
+
+(define (gunzip-bytes in-bs)
+  (call-with-output-bytes
+   (λ (out)
+     (gunzip-through-ports (open-input-bytes in-bs) out))))
+
+(define complete-nonogram-dir (simple-form-path nonogram-dir))
+
+(define (serialize-message msg)
+  (~> msg
+      (serialize #:relative-directory complete-nonogram-dir)
+      s-exp->fasl
+      gzip-bytes))
+
+(define (deserialize-message msg)
+  (~> msg
+      gunzip-bytes
+      fasl->s-exp
+      deserialize))
+
+(define client-id=? eqv?)
+(struct client-action (client-id action from-server?) #:transparent)
+
+(define (run initial-world
+             #:client [this-client-id 0]
+             #:serve [listen-port #f]
+             #:upstream [server-conn #f])
   (define frame
     (new
      (class frame%
@@ -169,13 +270,57 @@
        (define/augment (on-close)
          (send refresh-timer stop)))))
 
-  (define base-size (get-base-puzzle-size initial-puzzle))
-  (define wld (make-world initial-puzzle))
+  (define base-size (get-base-puzzle-size (world-puzzle initial-world)))
+  (define this-cs (make-client-state this-client-id
+                                     initial-world))
 
-  (define (set-world! new-wld)
-    (unless (equal? wld new-wld)
-      (set! wld new-wld)
-      (send canvas need-refresh!)))
+  ;; ---------------------------------------------------------------------------
+
+  (define connected-clients (make-hasheqv))
+
+  (define (get-next-client-id)
+    (for/first ([i (in-naturals 1)]
+                #:unless (member i (hash-values connected-clients) client-id=?))
+      i))
+
+  (define (recv-loop conn #:client [client-id #f])
+    (let loop ()
+      (match (ws-recv conn)
+        [(? eof-object?)
+         (ws-close! conn)]
+        [bs
+         (define msg (deserialize-message bs))
+         (enqueue-update!
+          (if client-id
+              (client-action client-id msg #f)
+              (match msg
+                [(cons client-id msg)
+                 (client-action client-id msg #t)])))
+         (loop)])))
+
+  (define (do-send! conn bs)
+    (ws-send! conn bs #:payload-type 'binary))
+
+  (define (send-to-server! action)
+    (when server-conn
+      (do-send! server-conn (serialize-message action))))
+
+  (define (broadcast! client-id action)
+    (define echo? (echo-action? action))
+    (define bs (serialize-message (cons client-id action)))
+    (for ([(conn client-id*) (in-mutable-hash connected-clients)]
+          #:when (or echo? (not (client-id=? client-id client-id*))))
+      (thread (λ () (do-send! conn bs)))))
+
+  ;; ---------------------------------------------------------------------------
+
+  (define (perform-action! client-id action from-server?)
+    (set! this-cs (perform-action this-cs client-id action))
+    (send canvas need-refresh!)
+    (unless (a:local? action)
+      (when (not from-server?)
+        (send-to-server! action))
+      (broadcast! client-id action)))
 
   (define update-thread
     (thread
@@ -185,14 +330,40 @@
                           (λ (exn)
                             ((error-display-handler) (exn-message exn) exn))])
            (match (thread-receive)
+             [(client-action client-id action from-server?)
+              (perform-action! client-id action from-server?)]
              [(cons 'mouse-event args)
-              (set-world! (apply on-mouse-event wld args))]
+              (enqueue-local-actions! (apply on-mouse-event this-cs args))]
              [(cons 'keyboard-event args)
-              (set-world! (apply on-keyboard-event wld args))]))
+              (enqueue-local-actions! (apply on-keyboard-event this-cs args))]
+             [(cons 'client-connected conn)
+              (define client-id (get-next-client-id))
+              (hash-set! connected-clients conn client-id)
+              (do-send! conn (serialize-message (cons client-id (client-state-world this-cs))))
+              (thread
+               (λ ()
+                 (recv-loop conn #:client client-id)
+                 (enqueue-update! (cons 'client-disconnected conn))))]
+             [(cons 'client-disconnected conn)
+              (hash-remove! connected-clients conn)]))
          (loop)))))
 
   (define (enqueue-update! msg)
     (thread-send update-thread msg))
+
+  (define (enqueue-local-actions! actions)
+    (for ([action (in-list actions)])
+      (enqueue-update! (client-action this-client-id action #f))))
+
+  (define shutdown-ws-server!
+    (if listen-port
+        (ws-serve
+         #:port listen-port
+         (λ (conn req)
+           (enqueue-update! (cons 'client-connected conn))))
+        void))
+
+  ;; ---------------------------------------------------------------------------
 
   (define canvas
     (new
@@ -222,15 +393,13 @@
               (need-refresh!)]
              [_ (void)])
 
-           (define tile-point (send puzzle-renderer get-tile-at
+           (define tile-loc (send puzzle-renderer get-tile-at
                                     (tf* tf:canvas-to-render location)))
-           (when (or tile-point (memq event-type '(left-up middle-up right-up)))
-             (enqueue-update!
-              (list 'mouse-event
-                    event-type
-                    (event->modifier-keys event)
-                    (and~> tile-point point-x)
-                    (and~> tile-point point-y))))))
+           (enqueue-update!
+            (list 'mouse-event
+                  event-type
+                  (event->modifier-keys event)
+                  tile-loc))))
 
        (define/override (on-char event)
          (define-values [event-type key-code]
@@ -247,6 +416,7 @@
          (set! needs-refresh? #t))
 
        (define/private (update-renderer!)
+         (define wld (client-state-world this-cs))
          (define backing-scale (send (get-dc) get-backing-scale))
          (define output-scale (calculate-output-scale))
          (cond
@@ -256,13 +426,14 @@
             (set! puzzle-renderer
                   (new puzzle-renderer%
                        [puzzle (world-puzzle wld)]
-                       [board-analysis (world-board-analysis wld)]
+                       [board-analysis (client-state-board-analysis this-cs)]
                        [output-scale output-scale]
                        [backing-scale backing-scale]))]
            [else
             (send puzzle-renderer update!
                   (world-puzzle wld)
-                  (world-board-analysis wld))]))
+                  (client-state-board-analysis this-cs)
+                  (world-cursor-locations wld))]))
 
        (define/private (calculate-output-scale)
          (define-values [w h] (get-client-size))
@@ -273,9 +444,7 @@
 
        (define/private (paint dc)
          (update-renderer!)
-         (define rendered-p (send puzzle-renderer get-render
-                                  (and~> mouse-location
-                                         (tf* tf:canvas-to-render _))))
+         (define rendered-p (send puzzle-renderer get-render))
 
          (define centered-p (cc-superimpose (get-bounds-pict) rendered-p))
          (define render-loc (truncate-point (pict-child-point centered-p rendered-p)))
@@ -284,13 +453,7 @@
          (send dc set-smoothing 'smoothed)
          (define timing-end (timing-start 'blit))
          (draw-pict rendered-p dc (point-x render-loc) (point-y render-loc))
-         (timing-end)
-
-         (when (world-render-cursor? wld)
-           (match mouse-location
-             [(point x y)
-              (draw-pict (cellophane (colorize (disk 10) "red") 0.5) dc (- x 5) (- y 5))]
-             [_ (void)])))
+         (timing-end))
 
        (define/public (do-refresh)
          (collect-garbage 'incremental)
@@ -317,18 +480,36 @@
          [interval (floor (/ 1000 60))]
          [notify-callback (λ () (send canvas do-refresh))]))
 
+  (when server-conn
+    (thread (λ () (recv-loop server-conn))))
+
   (send frame show #t)
   (send canvas focus)
   (yield 'wait)
+  (shutdown-ws-server!)
   (void))
+
+;; -----------------------------------------------------------------------------
 
 (module+ main
   (require racket/cmdline
+           toolbox/who
            "array.rkt"
            (submod "core.rkt" example))
 
+  (define/who (string->ws-url str)
+    (define base-url (string->url str))
+    (match (url-scheme base-url)
+      [#f (struct-copy url base-url [scheme "ws"])]
+      [(or "ws" "wss") base-url]
+      [scheme
+       (raise-arguments-error who "not a valid WebSocket URL"
+                              "url" base-url)]))
+
   (define log-timings? #f)
   (define what-to-do #f)
+  (define listen-port #f)
+
   (command-line
    #:once-any
    ["--puzzle" name
@@ -346,7 +527,13 @@
    ["--load-puzzle-pnc" puzzle-string columns
     "Load puzzle encoded in the puzzle-nonograms.com format"
     (set! what-to-do (array 'load/pnc puzzle-string columns))]
+   ["--connect" url
+    "Connect to a server listening with --serve at URL <url>"
+    (set! what-to-do (array 'connect (string->ws-url url)))]
    #:once-each
+   ["--serve" port
+    "Start a server on <port> for others to connect to"
+    (set! listen-port (string->number port))]
    ["--debug-log-timings"
     "Log timings during puzzle analyze and render"
     (set! log-timings? #t)])
@@ -361,6 +548,14 @@
       (define b (puzzle-board pz))
       (eprintf "  ~v (~a×~a)\n" name (board-width b) (board-height b))))
 
+  (define (do-run pz
+                  #:client [this-client-id 0]
+                  #:upstream [server-conn #f])
+    (run pz
+         #:client this-client-id
+         #:serve listen-port
+         #:upstream server-conn))
+
   (match what-to-do
     [#f
      (eprintf "No puzzle selected. Please select one of the following puzzles with `--puzzle <name>`:\n")
@@ -372,18 +567,28 @@
     [(array 'play puzzle-name)
      (define pz (get-puzzle puzzle-name))
      (unless pz
-       (eprintf "No puzzle named ~v." puzzle-name)
+       (eprintf "No puzzle named ~v.\n" puzzle-name)
        (exit 1))
-     (run pz)]
+     (do-run (make-world pz))]
     [(array 'load/no pz-str)
      (define solution (parse-nonograms.org-solution pz-str))
-     (run (solved-board->puzzle solution))]
+     (do-run (make-world (solved-board->puzzle solution)))]
     [(array 'load/pbn pz-str)
      (define solution (parse-pbnsolve-solution pz-str))
-     (run (solved-board->puzzle solution))]
+     (do-run (make-world (solved-board->puzzle solution)))]
     [(array 'load/pnc pz-str cols-str)
      (define cols (string->number cols-str))
      (define clues (parse-puzzle-nonograms.com-clues pz-str cols))
-     (run (clues->puzzle clues))])
+     (do-run (make-world (clues->puzzle clues)))]
+    [(array 'connect connect-url)
+     (when listen-port
+       (eprintf "Cannot combine --connect with --serve.\n")
+       (exit 1))
+
+     (define conn (ws-connect connect-url))
+     (match-define (cons client-id wld) (deserialize-message (ws-recv conn)))
+     (do-run wld
+             #:client client-id
+             #:upstream conn)])
 
   (close-log-writer log-writer))

@@ -5,6 +5,7 @@
          racket/list
          racket/match
          racket/math
+         racket/serialize
          racket/string
          threading
          toolbox/who
@@ -106,7 +107,7 @@
 ;; -----------------------------------------------------------------------------
 ;; board
 
-(struct board (rows) #:transparent)
+(serializable-struct board (rows) #:transparent)
 
 ;; make-board : natural? natural? -> board?
 (define (make-board width height)
@@ -237,14 +238,14 @@
 (define mega-line-clues? (listof mega-line-clues-chunk?))
 
 (define line-clues-type? (or/c 'single 'mega))
-(struct line-clues (type clues) #:transparent)
+(serializable-struct line-clues (type clues) #:transparent)
 
 ;; single-line-clues : single-line-clues? -> line-clues?
 (define (single-line-clues clues)
   (line-clues 'single clues))
 
 (define axis-clues? (arrayof line-clues?))
-(struct board-clues
+(serializable-struct board-clues
   (row-clues     ;; axis-clues?
    column-clues) ;; axis-clues?
   #:transparent)
@@ -372,7 +373,7 @@
 ;; -----------------------------------------------------------------------------
 ;; puzzle
 
-(struct puzzle
+(serializable-struct puzzle
   (board  ;; board?
    clues) ;; board-clues?
   #:transparent)
@@ -567,6 +568,40 @@
              (line-clues 'single '(1 1 2 1 4))
              (line-clues 'single '(2 2 3 3))))))
 
+  (define puzzle-s5-m149
+    (clues->puzzle
+     (board-clues
+      (array (line-clues 'single '(1 4 2 2 6))
+             (line-clues 'single '(1 6 10))
+             (line-clues 'single '(2 5 4 5))
+             (line-clues 'single '(12 3))
+             (line-clues 'single '(7 2 1))
+             (line-clues 'single '(3 1 1 2))
+             (line-clues 'single '(1 1 2 1 1))
+             (line-clues 'single '(2 1 1 1 3 3))
+             (line-clues 'single '(2 1 1 1 1 1 1))
+             (line-clues 'single '(4 2 1 1))
+             (line-clues 'single '(1 1 2 1))
+             (line-clues 'single '(3 2 1))
+             (line-clues 'single '(2 3 1 1))
+             (line-clues 'single '(3 4 2 3))
+             (line-clues 'single '(5 4 4)))
+      (array (line-clues 'single '(3 2 3))
+             (line-clues 'single '(3 5 3))
+             (line-clues 'single '(2 2 1 1 1 2))
+             (line-clues 'single '(6 2 2 1))
+             (line-clues 'mega '(12 #[() (1)] 5 #[(1) ()]))
+             (line-clues 'mega '(11 #[(1) ()] 2 4))
+             (line-clues 'mega '(#[(1) ()] 5 #[(2) ()] 3))
+             (line-clues 'single '(5 2 1))
+             (line-clues 'single '(4 6))
+             (line-clues 'single '(3 1 2 1))
+             (line-clues 'single '(3 4 1))
+             (line-clues 'mega '(5 #[(1 2) (1 1)] 4))
+             (line-clues 'single '(4 1 4))
+             (line-clues 'single '(4 2))
+             (line-clues 'mega '(6 #[(1) ()]))))))
+
   (define puzzle-s5-m150
     (clues->puzzle
      (board-clues
@@ -620,6 +655,7 @@
           (cons "S5 M016 (solved)" puzzle-s5-m016/solved)
           (cons "S5 M076" puzzle-s5-m076)
           (cons "S5 M106" puzzle-s5-m106)
+          (cons "S5 M149" puzzle-s5-m149)
           (cons "S5 M150" puzzle-s5-m150)))
 
   (define all-puzzle-names (map car all-puzzles))

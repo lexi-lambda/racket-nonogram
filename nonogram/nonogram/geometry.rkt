@@ -3,9 +3,11 @@
 (require data/gvector
          racket/contract
          racket/match
+         racket/serialize
          threading
          toolbox/pict
-         toolbox/print)
+         toolbox/print
+         toolbox/who)
 
 (provide integer-point?
          (contract-out
@@ -50,12 +52,13 @@
                          (-> point? transformation?)
                          (-> real? real? transformation?))]
           [tf:scale (->* [real?] [real?] transformation?)]
+          [tf-invert (-> transformation? transformation?)]
           [tf:world-to-child (-> pict? pict? transformation?)]
           [tf:child-to-world (-> pict? pict? transformation?)]))
 
 ;; -----------------------------------------------------------------------------
 
-(struct point (x y) #:transparent)
+(serializable-struct point (x y) #:transparent)
 
 (define point-
   (case-lambda
@@ -214,6 +217,17 @@
 (define (tf:scale sx [sy sx])
   (transformation sx 0.0 0.0
                   0.0 sy 0.0))
+
+(define/who (tf-invert t)
+  (match-define (transformation xx yx x0 xy yy y0) t)
+  (define a (- (* yx y0) (* yy x0)))
+  (define b (- (* xy x0) (* xx y0)))
+  (define d (- (* xx yy) (* yx xy)))
+  (when (zero? d)
+    (raise-arguments-error who "transformation is not invertible"
+                           "transformation" t))
+  (transformation (/ yy d) (- (/ yx d)) (/ a d)
+                  (- (/ xy d)) (/ xx d) (/ b d)))
 
 (define (tf* . ts0)
   (match-define (cons t ts) (reverse ts0))

@@ -31,8 +31,11 @@
             [get-output-scale (->m real?)]
             [get-backing-scale (->m real?)]
 
-            [update! (->m puzzle? (or/c board-analysis? #f) void?)]
-            [get-render (->*m [] [(or/c point? #f)] pict?)]
+            [update! (->m puzzle?
+                          (or/c board-analysis? #f)
+                          (hash/c natural? integer-point? #:immutable #t)
+                          void?)]
+            [get-render (->m pict?)]
             [get-tile-at (->m point? (or/c integer-point? #f))])]))
 
 ;; -----------------------------------------------------------------------------
@@ -123,7 +126,11 @@
 (define GRID-BORDER-WIDTH 2)
 (define GRID-TILE-RADIUS 2)
 
-(define CURSOR-COLOR (make-color #x3d #x7b #xe0))
+(define CURSOR-COLORS
+  (array (make-color #x3d #x7b #xe0)
+         (make-color #xe0 #x3d #x3d)
+         (make-color #x3d #xe0 #x58)
+         (make-color #xf0 #xe9 #x30)))
 
 ;; -----------------------------------------------------------------------------
 
@@ -167,9 +174,10 @@
       (linewidth TILE-SYMBOL-THICKNESS _)
       (inset 1)))
 
-(define tile-cursor
+(define (tile-cursor client-id)
+  (define color-i (remainder client-id (array-length CURSOR-COLORS)))
   (rounded-rectangle TILE-SIZE TILE-SIZE GRID-TILE-RADIUS
-                     #:border-color CURSOR-COLOR
+                     #:border-color (array-ref CURSOR-COLORS color-i)
                      #:border-width GRID-BORDER-WIDTH))
 
 (define board-renderer%
@@ -303,7 +311,8 @@
   (class renderer%
     (init-field puzzle
                 [output-scale 1.0]
-                [board-analysis #f])
+                [board-analysis #f]
+                [cursor-locations (hasheqv)])
     (init [backing-scale 1.0])
     (define specified-backing-scale backing-scale)
     (define total-scale (* output-scale backing-scale))
@@ -322,6 +331,8 @@
     (define board-pict #f)
     (define rendered-puzzle-bm-box (box #f))
     (define rendered-puzzle #f)
+    (define tf:tile-to-puzzle #f)
+    (define tf:puzzle-to-tile #f)
 
     (define/private (render!)
       (define timing-end (timing-start 'render!))
@@ -344,36 +355,42 @@
                 (freeze-to* rendered-puzzle-bm-box)
                 (inset 5)
                 (scale output-scale)))
+
+      (unless tf:tile-to-puzzle
+        (define t-to-p
+          (tf* (tf:child-to-world rendered-puzzle board-pict)
+               (tf:translate (/ GRID-BORDER-WIDTH 2)
+                             (/ GRID-BORDER-WIDTH 2))
+               (tf:scale TILE-SIZE)))
+
+        (set! tf:tile-to-puzzle t-to-p)
+        (set! tf:puzzle-to-tile (tf-invert t-to-p)))
+
       (timing-end))
+
+    (define/private (overlay-cursors p)
+      (for/fold ([p p])
+                ([(client-id tile-location) (in-immutable-hash cursor-locations)])
+        (match-define (point x y) (tf* tf:tile-to-puzzle tile-location))
+        (pin-over p x y (scale (tile-cursor client-id) output-scale))))
 
     (define/public (get-output-scale)
       output-scale)
     (define/public (get-backing-scale)
       specified-backing-scale)
 
-    (define/public (update! new-puzzle new-board-analysis)
+    (define/public (update! new-puzzle new-board-analysis new-cursor-locations)
       (unless (and (equal? puzzle new-puzzle)
                    (equal? board-analysis new-board-analysis))
         (set! puzzle new-puzzle)
         (set! board-analysis new-board-analysis)
-        (set! rendered-puzzle #f)))
+        (set! rendered-puzzle #f))
+      (set! cursor-locations new-cursor-locations))
 
     (define/public (get-render [mouse-location #f])
       (unless rendered-puzzle
         (render!))
-      (match (and~> mouse-location get-tile-at)
-        [#f rendered-puzzle]
-        [tile-location
-         (match-define (point tile-x tile-y)
-           (tf* (tf:child-to-world rendered-puzzle board-pict)
-                (tf:translate (/ GRID-BORDER-WIDTH 2)
-                              (/ GRID-BORDER-WIDTH 2))
-                (tf:scale TILE-SIZE)
-                tile-location))
-         (pin-over rendered-puzzle
-                   tile-x
-                   tile-y
-                   (scale tile-cursor output-scale))]))
+      (overlay-cursors rendered-puzzle))
 
     (define/public (get-size)
       (pict-size (get-render)))
@@ -381,14 +398,8 @@
     (define/public (get-tile-at mouse-location)
       (get-render) ;; render if needed
 
-      (define w-to-c (tf:world-to-child rendered-puzzle board-pict))
       (match-define (and tile-location (point tile-x tile-y))
-        (floor-point
-         (tf* (tf:scale (/ TILE-SIZE))
-              (tf:translate (/ GRID-BORDER-WIDTH -2)
-                            (/ GRID-BORDER-WIDTH -2))
-              w-to-c
-              mouse-location)))
+        (floor-point (tf* tf:puzzle-to-tile mouse-location)))
 
       (define board (puzzle-board puzzle))
       (define in-bounds?
