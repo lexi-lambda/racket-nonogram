@@ -532,7 +532,10 @@
 
 ;; render-clue/single : clue? (or/c clue-analysis? 'error #f) -> pict?
 (define (render-clue/single clue [analysis #f])
-  (~> (text (number->string clue) CLUE-FONT)
+  (define base-p (text (number->string clue) CLUE-FONT))
+  (~> (if (> (pict-height base-p) TILE-SIZE)
+          (scale base-p (/ TILE-SIZE (pict-height base-p)))
+          base-p)
       (colorize (clue-analysis-color analysis))))
 
 ;; render-clue/mega : axis? clue? (or/c clue-analysis? 'error #f) -> pict?
@@ -568,17 +571,21 @@
 
   (define pen (make-pen #:style 'transparent))
   (define brush (make-brush #:color (clue-analysis-color analysis)))
-  (unsafe-dc
-   (λ (dc x y)
-     (define old-pen (send dc get-pen))
-     (define old-brush (send dc get-brush))
-     (send dc set-pen pen)
-     (send dc set-brush brush)
-     (send dc draw-path path x y)
-     (send dc set-brush old-brush)
-     (send dc set-pen old-pen))
-   total-w
-   total-h))
+  (define base-p
+    (unsafe-dc
+     (λ (dc x y)
+       (define old-pen (send dc get-pen))
+       (define old-brush (send dc get-brush))
+       (send dc set-pen pen)
+       (send dc set-brush brush)
+       (send dc draw-path path x y)
+       (send dc set-brush old-brush)
+       (send dc set-pen old-pen))
+     total-w
+     total-h))
+  (if (> (pict-height base-p) (* 2 TILE-SIZE))
+      (scale base-p (/ (* 2 TILE-SIZE) (pict-height base-p)))
+      base-p))
 
 ;; render-line-clues/single : axis? single-line-clues? (or/c single-line-analysis? #f) -> pict?
 (define (render-line-clues/single axis line-clues [line-analysis #f])
