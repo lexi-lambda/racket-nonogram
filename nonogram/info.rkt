@@ -11,6 +11,7 @@
     "draw-lib"
     "gui-lib"
     "pict-lib"
+    "rfc6455"
     "threading-lib"
     "toolbox-lib"
     "toolbox-draw-lib"))
