@@ -1008,7 +1008,7 @@ solver to keep the logic simpler. |#
                   (connected-region-size+end/mega tiles mi tile-full?))
                 (and (= size clue)
                      (connected-region-spans-both-lines? mi end-mi size)
-                     (loop clues (add1 end-mi)))])])]
+                     (loop clues end-mi))])])]
          [_ (loop clues (add1 mi))])]
       [(empty? clues) 'done]
       [else #f])))
@@ -1024,6 +1024,10 @@ solver to keep the logic simpler. |#
                 'done)
   (check-equal? (analyze-line/mega/simple '(#[(1) (2)]) #(#(empty empty full)
                                                           #(full  full  empty)))
+                'done)
+  (check-equal? (analyze-line/mega/simple '(4 #[(1) ()])
+                                          #(#(cross full cross full)
+                                            #(full  full full  cross)))
                 'done)
   (check-equal? (analyze-line/mega/simple '(#[(1) ()] 3)
                                           #(#(empty cross full)
