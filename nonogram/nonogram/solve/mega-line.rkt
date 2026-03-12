@@ -887,9 +887,9 @@ solver to keep the logic simpler. |#
                    (and (<= end-i num-tiles)
                         (for/and ([i (in-range start-i end-i)])
                           (and (tile-full? (array-ref line-tiles i))
-                               (tile-hole? (array-ref opposite-tiles i))))
+                               (not (tile-full? (array-ref opposite-tiles i)))))
                         (or (= end-i num-tiles)
-                            (tile-hole? (array-ref line-tiles end-i)))
+                            (not (tile-full? (array-ref line-tiles end-i))))
                         (let ()
                           (define chunk* (match line-i
                                            [0 (array line-clues clues-1)]
