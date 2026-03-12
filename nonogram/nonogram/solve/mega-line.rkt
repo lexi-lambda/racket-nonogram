@@ -25,12 +25,31 @@
    line-clue-indexes)
   #:transparent)
 
-(define (clues-ref carr clue-i)
+(define (clues-ref cvec clue-i)
   (match clue-i
     [(single-line-index chunk-i line-i i)
-     (array-ref (array-ref (array-ref carr chunk-i) line-i) i)]
+     (vector-ref (array-ref (vector-ref cvec chunk-i) line-i) i)]
     [chunk-i
-     (array-ref carr chunk-i)]))
+     (vector-ref cvec chunk-i)]))
+
+(define (clues-set! cvec clue-i val)
+  (match clue-i
+    [(single-line-index chunk-i line-i i)
+     (vector-set! (array-ref (vector-ref cvec chunk-i) line-i) i val)]
+    [chunk-i
+     (vector-set! cvec chunk-i val)]))
+
+(define (clues-update! cvec clue-i proc)
+  (match clue-i
+    [(single-line-index chunk-i line-i i)
+     (define vec (array-ref (array-ref cvec chunk-i) line-i))
+     (define val (proc (vector-ref vec i)))
+     (vector-set! vec i val)
+     val]
+    [chunk-i
+     (define val (proc (vector-ref cvec chunk-i)))
+     (vector-set! cvec chunk-i val)
+     val]))
 
 ;; make-clue-tiles-ref/mega : mega-tiles/c -> (clue-index? mega-index? -> tile?)
 (define ((make-clue-tiles-ref/mega clue-tiless) clue-i mi)
@@ -135,8 +154,10 @@ solver to keep the logic simpler. |#
         i))
 
     (define single-line-clue-indexes
-      (for/array ([clue-i (in-array clue-indexes)]
-                  #:when (single-line-index? clue-i))
+      (for*/array ([chunk (in-array clue-indexes)]
+                   #:when (array? chunk)
+                   [line-i (in-list '(0 1))]
+                   [clue-i (in-array (array-ref chunk line-i))])
         clue-i))
 
     ;; line-clue-indexes : (or/c 0 1) -> (arrayof (or/c natural? single-line-index?))
@@ -172,6 +193,21 @@ solver to keep the logic simpler. |#
            (make-empty-tiles/mega-2)]
           [_
            (make-empty-tiles/mega)])))
+
+    ;; Tracks the number of tiles that still need to be placed (or assigned) for
+    ;; each clue.
+    (define clue-tiles-left
+      (for/vector #:length num-chunks
+                  ([chunk (in-array clues)])
+        (match chunk
+          [(array line-0 line-1)
+           (array (for/vector #:length (array-length line-0)
+                              ([clue (in-array line-0)])
+                    clue)
+                  (for/vector #:length (array-length line-1)
+                              ([clue (in-array line-1)])
+                    clue))]
+          [clue clue])))
 
     ;; -------------------------------------------------------------------------
 
@@ -215,6 +251,10 @@ solver to keep the logic simpler. |#
                   (array-ref line 0))]
                [next-i
                 (list next-i)]))]))
+
+    ;; clue-tiles-left : clue-index? -> boolean?
+    (define (clue-solved? clue-i)
+      (zero? (clues-ref clue-tiles-left clue-i)))
 
     ;; board-set!/mega : mega-index? tile? -> void?
     (define (board-set!/mega mi val
@@ -276,7 +316,33 @@ solver to keep the logic simpler. |#
 
         ; propagate filled tiles to board and cross other clues
         (when (tile-full? val)
+          (define clue (clues-ref clues clue-i))
+
+          (define (cross-empty-cells! line-tiles)
+            (for ([i (in-range num-tiles)]
+                  #:when (tile-empty? (vector-ref line-tiles i)))
+              (tiles-set!/track line-tiles i 'cross)))
+
+          (define (finish-solved-clue!)
+            (cond
+              [(single-line-index? clue-i)
+               (cross-empty-cells! clue-tiles)
+               (propagate-information-to-neighbors/single clue-i)]
+              [else
+               (cross-empty-cells! (array-ref clue-tiles 0))
+               ;; see Note [Mirror mega 2 clue tiles]
+               (unless (= clue 2)
+                 (cross-empty-cells! (array-ref clue-tiles 1)))
+               (propagate-information-to-neighbors/mega clue-i)]))
+
           (define (transfer! mi)
+            (define tiles-left (clues-update! clue-tiles-left clue-i sub1))
+            (cond
+              [(= tiles-left 0)
+               (finish-solved-clue!)]
+              [(< tiles-left 0)
+               (raise-contradiction "too many tiles filled for clue")])
+
             (tiles-set!/mega unassigned-user-tiles mi 'empty #:track? #f)
             (board-set!/mega mi 'full)
             (for ([other-i (in-array (line-clue-indexes (mega-index-line mi)))]
@@ -291,7 +357,7 @@ solver to keep the logic simpler. |#
                               #:contradiction-reason "single-line clue opposes full tile")]
 
             ;; see Note [Mirror mega 2 clue tiles]
-            [(eqv? (clues-ref clues clue-i) 2)
+            [(= clue 2)
              (transfer! (opposite mi))]))))
 
     (define (clue-tiles-fill!/mega clue-i val [start-mi 0] [end-mi num-tiles/mega]
@@ -774,20 +840,20 @@ solver to keep the logic simpler. |#
 
     (define (gain-information-to-fixed-point)
       (let go-again ()
-        (for ([(chunk i) (in-indexed (in-array clues))])
+        (for ([chunk (in-array clue-indexes)])
           (match chunk
-            [(array line-0 line-1)
-             (for ([j (in-range (array-length line-0))])
-               (define clue-i (single-line-index i 0 j))
-               (gain-information-from-self/single clue-i)
-               (propagate-information-to-neighbors/single clue-i))
-             (for ([j (in-range (array-length line-1))])
-               (define clue-i (single-line-index i 1 j))
-               (gain-information-from-self/single clue-i)
-               (propagate-information-to-neighbors/single clue-i))]
-            [_
-             (gain-information-from-self/mega i)
-             (propagate-information-to-neighbors/mega i)]))
+            [(? array?)
+             (for* ([line (in-array chunk)]
+                    [clue-i (in-array line)])
+               (unless (clue-solved? clue-i)
+                 (gain-information-from-self/single clue-i))
+               (unless (clue-solved? clue-i)
+                 (propagate-information-to-neighbors/single clue-i)))]
+            [clue-i
+             (unless (clue-solved? clue-i)
+               (gain-information-from-self/mega clue-i))
+             (unless (clue-solved? clue-i)
+               (propagate-information-to-neighbors/mega clue-i))]))
         (propagate-information-from-user)
         (when (current-gained-information?)
           (current-gained-information? #f)
@@ -844,6 +910,23 @@ solver to keep the logic simpler. |#
                                         #(full  empty empty)))
                 #(#(cross empty empty)
                   #(full  full  empty)))
+
+  (check-equal? (solve-line/mega '(3) #(#(full full)
+                                        #(full empty)))
+                #(#(full full)
+                  #(full cross)))
+  (check-equal? (solve-line/mega '(2 3) #(#(empty empty empty full full)
+                                          #(empty empty empty full empty)))
+                #(#(empty empty cross full full)
+                  #(empty empty cross full cross)))
+  (check-equal? (solve-line/mega '(3 2) #(#(full empty empty empty empty)
+                                          #(full full  empty empty empty)))
+                #(#(full cross cross empty empty)
+                  #(full full  cross empty empty)))
+  (check-equal? (solve-line/mega '(3 2) #(#(full full  empty empty empty)
+                                          #(full empty empty empty empty)))
+                #(#(full full  cross empty empty)
+                  #(full cross cross empty empty)))
 
   (check-equal? (solve-line/mega '(3 4 #[(1 1) ()])
                                  #(#(empty empty empty empty empty empty empty empty)

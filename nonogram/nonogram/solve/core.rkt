@@ -22,6 +22,7 @@
                                   [column-analysis axis-clue-analysis?]))
 
           [tile-predicate/c contract?]
+          [tile-empty? tile-predicate/c]
           [tile-cross? tile-predicate/c]
           [tile-full? tile-predicate/c]
           [tile-hole? tile-predicate/c])
@@ -188,6 +189,9 @@
 ;; -----------------------------------------------------------------------------
 
 (define tile-predicate/c (-> tile? boolean?))
+
+(define (tile-empty? tile)
+  (eq? tile 'empty))
 
 (define (tile-cross? tile)
   (eq? tile 'cross))
