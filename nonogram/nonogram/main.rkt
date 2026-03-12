@@ -56,8 +56,6 @@
 (serializable-struct a:move-cursor action (location) #:transparent)
 (struct a:local action (proc) #:transparent)
 
-(define (a:set-board-analysis new-analysis)
-  (a:local (λ (cs) (struct-copy client-state cs [board-analysis new-analysis]))))
 (define (a:set-drag-mode new-mode)
   (a:local (λ (cs) (struct-copy client-state cs [drag-mode new-mode]))))
 

@@ -174,11 +174,96 @@
       (linewidth TILE-SYMBOL-THICKNESS _)
       (inset 1)))
 
-(define (tile-cursor client-id)
-  (define color-i (remainder client-id (array-length CURSOR-COLORS)))
-  (rounded-rectangle TILE-SIZE TILE-SIZE GRID-TILE-RADIUS
-                     #:border-color (array-ref CURSOR-COLORS color-i)
-                     #:border-width GRID-BORDER-WIDTH))
+(define tile-cursor
+  (let ()
+    (define (color client-id)
+      (array-ref CURSOR-COLORS (remainder client-id (array-length CURSOR-COLORS))))
+
+    ;; Renders a series of diagonal stripes for use as a clipping region when
+    ;; rendering overlapping cursors.
+    (define (build-hatch-path divisions index)
+      (define p (new dc-path%))
+      (define stripes/2 3)
+      (define stripes (* stripes/2 2))
+      (define stripe-delta (/ 1.0 stripes/2))
+      (define division-delta (/ stripe-delta divisions))
+      (define offset1 (* division-delta index))
+      (define offset2 (* division-delta (add1 index)))
+      (for ([i (in-range stripes/2)])
+        (define d1 (+ (* stripe-delta i) offset1))
+        (define d2 (+ (* stripe-delta i) offset2))
+        (send p move-to 0.0 d1)
+        (send p line-to 0.0 d2)
+        (send p line-to d2 0.0)
+        (send p line-to d1 0.0)
+        (send p close))
+      (for ([i (in-range stripes/2)])
+        (define d1 (+ (* stripe-delta i) offset1))
+        (define d2 (+ (* stripe-delta i) offset2))
+        (send p move-to d1 1.0)
+        (send p line-to d2 1.0)
+        (send p line-to 1.0 d2)
+        (send p line-to 1.0 d1)
+        (send p close))
+      (send p scale
+            (+ TILE-SIZE GRID-BORDER-WIDTH)
+            (+ TILE-SIZE GRID-BORDER-WIDTH))
+      (send p translate
+            (- (/ GRID-BORDER-WIDTH 2))
+            (- (/ GRID-BORDER-WIDTH 2)))
+      p)
+
+    ;; Memoize `hatch-path`, as the number of distinct paths should be small.
+    (define hatch-paths (make-hash))
+    (define (hatch-path divisions index)
+      (hash-ref! hatch-paths
+                 (array divisions index)
+                 (λ () (build-hatch-path divisions index))))
+    
+    (λ (client-ids)
+      (match client-ids
+        ;; Simple case: just a rounded rectangle.
+        [(list client-id)
+         (rounded-rectangle TILE-SIZE TILE-SIZE GRID-TILE-RADIUS
+                            #:border-color (color client-id)
+                            #:border-width GRID-BORDER-WIDTH)]
+
+        ;; Overlapping case: hatched rounded rectangle.
+        [(cons client-id client-ids)
+         (define divisions (add1 (length client-ids)))
+         (define paths
+           (for/list ([i (in-range 1 divisions)])
+             (hatch-path divisions i)))
+
+         (unsafe-dc
+          (λ (dc x y)
+            (define old-pen (send dc get-pen))
+            (define old-brush (send dc get-brush))
+            (define old-region (send dc get-clipping-region))
+            (define old-transform (send dc get-transformation))
+
+            (send dc set-brush (make-brush #:style 'transparent))
+            (send dc translate x y)
+            (define region (new region%))
+
+            (define (stroke-rect client-id)
+              (send dc set-pen (make-pen #:color (color client-id) #:width GRID-BORDER-WIDTH))
+              (send dc draw-rounded-rectangle 0 0 TILE-SIZE TILE-SIZE GRID-TILE-RADIUS))
+
+            (stroke-rect client-id)
+            (for ([client-id (in-list client-ids)]
+                  [path (in-list paths)])
+              (send region set-path path)
+              (send dc set-clipping-region region)
+              (stroke-rect client-id)
+              (send dc set-clipping-region #f))
+
+            (send dc set-transformation old-transform)
+            (send dc set-clipping-region old-region)
+            (send dc set-brush old-brush)
+            (send dc set-pen old-pen))
+          TILE-SIZE
+          TILE-SIZE)]))))
 
 (define board-renderer%
   (class renderer%
@@ -311,14 +396,16 @@
   (class renderer%
     (init-field puzzle
                 [output-scale 1.0]
-                [board-analysis #f]
-                [cursor-locations (hasheqv)])
+                [board-analysis #f])
     (init [backing-scale 1.0])
     (define specified-backing-scale backing-scale)
     (define total-scale (* output-scale backing-scale))
 
     (inherit freeze-to*)
     (super-new [backing-scale total-scale])
+
+    (define cursor-locations (hasheqv))
+    (define grouped-cursor-locations (hash))
 
     (define board-w (board-width (puzzle-board puzzle)))
     (define board-h (board-height (puzzle-board puzzle)))
@@ -370,9 +457,9 @@
 
     (define/private (overlay-cursors p)
       (for/fold ([p p])
-                ([(client-id tile-location) (in-immutable-hash cursor-locations)])
+                ([(tile-location client-ids) (in-immutable-hash grouped-cursor-locations)])
         (match-define (point x y) (tf* tf:tile-to-puzzle tile-location))
-        (pin-over p x y (scale (tile-cursor client-id) output-scale))))
+        (pin-over p x y (scale (tile-cursor client-ids) output-scale))))
 
     (define/public (get-output-scale)
       output-scale)
@@ -385,7 +472,18 @@
         (set! puzzle new-puzzle)
         (set! board-analysis new-board-analysis)
         (set! rendered-puzzle #f))
-      (set! cursor-locations new-cursor-locations))
+      (unless (equal? cursor-locations new-cursor-locations)
+        (set! cursor-locations new-cursor-locations)
+        ;; Invert mapping from `client-id => location` to `location => (listof client-id)`
+        ;; to allow rendering overlapping cursors specially.
+        (set! grouped-cursor-locations
+              (for/foldr ([cursor-locations (hash)])
+                         ([client-id+location (in-list (hash->list new-cursor-locations #t))])
+                (match-define (cons client-id location) client-id+location)
+                (hash-update cursor-locations
+                             location
+                             (λ~> (cons client-id _))
+                             '())))))
 
     (define/public (get-render [mouse-location #f])
       (unless rendered-puzzle
