@@ -12,8 +12,15 @@
          "solve/single-line.rkt")
 
 (module+ test
-  (require rackunit
-           (submod "core.rkt" example)))
+  (require racket/exn
+           racket/string
+           rackunit
+           raco/testing
+           toolbox/print
+           (submod "core.rkt" example))
+
+  (port-count-lines! (current-output-port))
+  (port-count-lines! (current-error-port)))
 
 (provide clue-analysis?
          single-line-analysis?
@@ -121,7 +128,43 @@
               (loop new-pz))])])))
 
 (module+ test
-  (for ([puzzle-entry (in-list all-puzzles)])
-    (match-define (cons name pz) puzzle-entry)
-    (with-check-info (['name name])
-      (check-pred puzzle? (solve-puzzle pz)))))
+  (define-values [solved unsolved contradictions exns]
+    (for/fold ([solved 0] [unsolved 0] [contradictions '()] [exns '()]
+               #:result (values solved unsolved (reverse contradictions) (reverse exns)))
+              ([puzzle-entry (in-list all-puzzles)])
+      (match-define (cons name pz) puzzle-entry)
+      (match (with-handlers ([exn:fail? values])
+               (match (solve-puzzle pz)
+                 ['error 'error]
+                 [solved-pz (analyze-puzzle solved-pz)]))
+        [(? board-analysis? analysis)
+         (test-log! #t)
+         (cond
+           [(board-analysis-solved? analysis)
+            (values (add1 solved) unsolved contradictions exns)]
+           [else
+            (printf "~v => 'pending\n" name)
+            (values solved (add1 unsolved) contradictions exns)])]
+        ['error
+         (test-log! #f)
+         (printf "~v => 'error\n" name)
+         (values solved unsolved (cons name contradictions) exns)]
+        [(? exn? exn)
+         (test-log! #f)
+         (printf "~v =>\n  ~a\n" name
+                 (multiline-printing-string (string-trim (exn-message exn))))
+         (values solved unsolved contradictions (cons (cons name exn) exns))])))
+  (newline)
+  (unless (empty? contradictions)
+    (eprintf "contradictions: ~v\n" contradictions))
+  (unless (empty? exns)
+    (eprintf "exceptions raised while solving:\n")
+    (for ([name+exn (in-list exns)])
+      (match-define (cons name exn) name+exn)
+      (eprintf "  ~v =>\n    ~a\n" name
+               (multiline-printing-string (string-trim (exn->string exn))))))
+  (printf "summary: ~a solved, ~a unsolved, ~a contradictions, and ~a exceptions\n"
+          solved
+          unsolved
+          (length contradictions)
+          (length exns)))

@@ -20,6 +20,9 @@
           [axis-clue-analysis? flat-contract?]
           (struct board-analysis ([row-analysis axis-clue-analysis?]
                                   [column-analysis axis-clue-analysis?]))
+          [line-analysis-solved? (-> line-clue-analysis? boolean?)]
+          [axis-analysis-solved? (-> axis-clue-analysis? boolean?)]
+          [board-analysis-solved? (-> board-analysis? boolean?)]
 
           [tile-predicate/c contract?]
           [tile-empty? tile-predicate/c]
@@ -185,6 +188,21 @@
   (row-analysis     ;; axis-clue-analysis?
    column-analysis) ;; axis-clue-analysis?
   #:transparent)
+
+(define (line-analysis-solved? analysis)
+  (eq? analysis 'done))
+
+(define (axis-analysis-solved? analysis)
+  (for/and ([analysis (in-array analysis)])
+    (line-analysis-solved? analysis)))
+
+(define (board-analysis-solved? analysis)
+  (match-define (board-analysis row-analysis column-analysis) analysis)
+  ; only need to check one axis, so pick the smaller one
+  (axis-analysis-solved?
+   (if (< (array-length row-analysis) (array-length column-analysis))
+       row-analysis
+       column-analysis)))
 
 ;; -----------------------------------------------------------------------------
 
