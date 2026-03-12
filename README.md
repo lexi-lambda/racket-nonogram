@@ -2,6 +2,8 @@
 
 A pleasant user interface for solving [nonogram](https://en.wikipedia.org/wiki/Nonogram) puzzles (also known as Paint-by-Numbers, Griddlers, and Picross). Supports standard puzzles and [Picross S](https://en.wikipedia.org/wiki/Picross_S)-style “mega nonogram” puzzles. Supports networked co-op multiplayer.
 
+[<img src="screenshot.png" width="480" />](screenshot.png)
+
 Requires an installation of [Racket](https://download.racket-lang.org/) to run. With Racket installed, run the following commands from the repository root to install and build:
 
 ```sh
