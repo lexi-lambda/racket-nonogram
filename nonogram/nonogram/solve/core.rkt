@@ -153,7 +153,7 @@
                                                mega-placement-bound?
                                                mega-placement-bound?
                                                #:set-full! (-> mega-index? any)
-                                               natural?)]))
+                                               (values natural? line-affinity? line-affinity?))]))
 
 ;; -----------------------------------------------------------------------------
 
@@ -904,17 +904,48 @@
                 (cons (mega-index 0 3)
                       (mega-placement-bound 'both 1))))
 
-;; Given two mega placement bounds, fills any tiles forced by crosses
-;; along the path bridging the two bounds. For example, suppose we have
-;; the following row:
+;; fill-forced-tiles-in-mega-span!
+;;   : mega-tiles/c mega-placement-bound? mega-placement-bound?
+;;     #:set-full! (-> mega-index? any)
+;;  -> (values natural? line-affinity? line-affinity?)
+;;
+;; Given two mega placement bounds, fills any tiles forced by crosses along the
+;; path bridging the two bounds. For example, suppose we have the following row:
 ;;   ☒☐☐☐☐☐☐☒☐■
 ;;   ■☐☐☒☐☐☐☐☐☐
-;; This function will fill any tiles that must be filled to connect the
-;; two filled boxes:
+;; This function will fill any tiles that must be filled to connect the two
+;; filled boxes:
 ;;   ☒☐■■■☐☐☒☐■
 ;;   ■■☐☒☐☐■■■☐
-;; It also calculates the minimum number of tiles that must be filled
-;; within the span, taking existing filled tiles into account.
+;;
+;; Along the way, it also calculates and returns the minimum number of tiles
+;; that must be filled within the span, taking existing filled tiles into
+;; account. It also returns two line affinities that can be used to calculate
+;; the minimum cost of extending a placement with the given bounds backwards or
+;; forwards, respectively. For example, given the row
+;;   ☐☐■☐☒☐☐☐
+;;   ☐☐☐☐☐■☐☐
+;; then the results of this function applied with bounds (mega-placement-bound 0 2)
+;; and (mega-placement-bound 1 5) will be as follows:
+;;
+;;   1. The returned minimum size will be 5, as at least 5 tiles must be filled
+;;      to bridge the two bounds.
+;;
+;;   2. The first line affinity will be #f, as one possible way to bridge the
+;;      two bounds is
+;;        ☐☐■☐☒☐☐☐
+;;        ☐☐■■■■☐☐
+;;      which fills both tiles in the first column. Therefore, it is possible to
+;;      extend the filled region backwards to either line at equal cost.
+;;
+;;   3. The second line affinity will be 1, as filling the tile in the first
+;;      line above the end bound would require filling 6 tiles, not five.
+;;      Therefore, extending the filled region forwards is biased towards the
+;;      second line.
+;;
+;; Note that the way this function interprets bounds with line 'both or 'either
+;; can be somewhat counterintuitive; see Note [Filling forced tiles between
+;; placement bounds] for an explanation.
 (define/who (fill-forced-tiles-in-mega-span! tiles first-bound last-bound #:set-full! set-full!)
   (match-define (mega-placement-bound first-line first-i) first-bound)
   (match-define (mega-placement-bound last-line last-i) last-bound)
@@ -926,6 +957,50 @@
 
   (define num-tiles (mega-tiles-length tiles))
 
+  ;; Note [Filling forced tiles between placement bounds]
+  ;; ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  ;; This function is used in two different ways:
+  ;;
+  ;;   1. It is used to bridge the first and last filled tiles in a mega clue.
+  ;;      When used in this way, the bounds always refer to a specific line,
+  ;;      never 'both or 'either. This is the mode in which the return values
+  ;;      are utilized.
+  ;;
+  ;;   2. It is used to fill tiles forced by the intersection of the earliest
+  ;;      and latest tightest placements for a clue (or the intersection of one
+  ;;      such placement and a filled-in tile). This mode is called purely for
+  ;;      its side effects (though we still try to return reasonable values).
+  ;;
+  ;; The interpretation of bounds supplied in the second case can be somewhat
+  ;; counterintuitive, as they represent the greatest lower bound and least
+  ;; upper bound for a clue’s placement, not tiles that must necessarily be
+  ;; filled by the placement. For example, suppose we have the following empty
+  ;; row for a mega 6 clue:
+  ;;   ☐☐☐☐
+  ;;   ☐☐☐☐
+  ;; When we calculate the earliest and latest placements for this clue, we will
+  ;; get the following two results:
+  ;;   ▧▧▧☐  ☐▧▧▧
+  ;;   ▧▧▧☐  ☐▧▧▧
+  ;; The earliest placement has an end bound of (mega-placement-bound 'both 2)
+  ;; and the latest placement has a start bound of (mega-placement-bound 'both 1).
+  ;; The intersection of these bounds yields the following span:
+  ;;   ☐▧▧☐
+  ;;   ☐▧▧☐
+  ;; This function will be called to fill any tiles forced within that span.
+  ;; Given the fact that the bounds specify 'both lines, it would be easy to
+  ;; mistakenly believe that all four tiles should be filled. However, that
+  ;; would be completely wrong in this case, as the bounds do not specify which
+  ;; tiles are (or should be) filled, they simply define the region inside which
+  ;; forced tiles *may* be filled. In this example, there are no forced tiles,
+  ;; so the proper behavior is to do nothing at all.
+  ;;
+  ;; A natural followup question is to ask what the difference is between a
+  ;; bound using 'both and a bound using 'either, or indeed what the difference
+  ;; is between such a bound and one using a specific line. The answer lies in
+  ;; what we consider to be “forced” at the span endpoints; see Note [Forced
+  ;; mega span endpoints] for details.
+  ;;
   ;; Note [Forced mega span endpoints]
   ;; ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   ;; Endpoints of the span must be handled specially. Normally, we fill tiles
@@ -990,95 +1065,152 @@
     [(= first-i last-i)
      (match* {first-line last-line}
        [{'both 'both}
-        (+ (maybe-fill-end-tile! (mega-index 0 first-i))
-           (maybe-fill-end-tile! (mega-index 1 first-i)))]
+        (values (+ (maybe-fill-end-tile! (mega-index 0 first-i))
+                   (maybe-fill-end-tile! (mega-index 1 first-i)))
+                #f
+                #f)]
        [{(or 0 'both) (or 0 'both)}
         (set-full! (mega-index 0 first-i))
-        1]
+        (values 1 0 0)]
        [{(or 1 'both) (or 1 'both)}
         (set-full! (mega-index 1 first-i))
-        1]
-       [{_ _} 0])]
+        (values 1 1 1)]
+       [{_ _}
+        (values 0 #f #f)])]
     [else
      (maybe-fill-end-tiles! first-bound)
      (maybe-fill-end-tiles! last-bound)
-     (let loop ([min-filled 0]
-                [line-aff (bound-line->aff first-line)]
-                [i first-i])
 
-       (define (line-aff? line-i)
-         (or (not line-aff) (= line-aff line-i)))
-       (define (line-cost line-i)
-         (if (line-aff? line-i) 0 1))
+     (define first-aff (bound-line->aff first-line))
+     (define last-aff (bound-line->aff last-line))
+     (define (last-aff? line-i)
+       (or (not last-aff) (= last-aff line-i)))
+     (define-values [min-filled backwards-aff forwards-aff]
+       (let loop ([min-filled 0]
+                  [backwards-aff #f]  ;; (or/c #f 0 1 'start 'both)
+                  [forwards-aff 'end] ;; (or/c 0 1 'end 'both)
+                  [line-aff first-aff]
+                  [i first-i])
 
-       (cond
-         [(> i last-i) min-filled]
-         [else
-          (define mi0 (mega-index 0 i))
-          (define mi1 (mega-index 1 i))
-          (define tile-0 (tiles-ref/mega tiles mi0))
-          (define tile-1 (tiles-ref/mega tiles mi1))
-          (match* {tile-0 tile-1}
-            [{_ 'cross}
-             (unless (= i first-i)
-               (set-full! (behind mi0)))
-             (set-full! mi0)
-             (unless (= i last-i)
-               (set-full! (afront mi0)))
-             (loop (+ min-filled 1 (line-cost 0))
-                   0
-                   (add1 i))]
-            [{'cross _}
-             (unless (= i first-i)
-               (set-full! (behind mi1)))
-             (set-full! mi1)
-             (unless (= i last-i)
-               (set-full! (afront mi1)))
-             (loop (+ min-filled 1 (line-cost 1))
-                   1
-                   (add1 i))]
-            [{'full 'full}
-             (loop (+ min-filled 2) #f (add1 i))]
-            [{'full 'empty}
-             (if (line-aff? 0)
-                 (loop (+ min-filled 1) 0 (add1 i))
-                 (loop (+ min-filled 2) #f (add1 i)))]
-            [{'empty 'full}
-             (if (line-aff? 1)
-                 (loop (+ min-filled 1) 1 (add1 i))
-                 (loop (+ min-filled 2) #f (add1 i)))]
-            [{'empty 'empty}
-             (loop (+ min-filled 1) line-aff (add1 i))])]))]))
+         (define (line-aff? line-i)
+           (or (not line-aff) (= line-aff line-i)))
+         (define (line-cost line-i)
+           (if (line-aff? line-i) 0 1))
+
+         (cond
+           [(> i last-i)
+            (values min-filled (or backwards-aff 'start) forwards-aff)]
+           [else
+            (define mi0 (mega-index 0 i))
+            (define mi1 (mega-index 1 i))
+            (define tile-0 (tiles-ref/mega tiles mi0))
+            (define tile-1 (tiles-ref/mega tiles mi1))
+            (match* {tile-0 tile-1}
+              [{_ 'cross}
+               (unless (= i first-i)
+                 (set-full! (behind mi0)))
+               (set-full! mi0)
+               (unless (= i last-i)
+                 (set-full! (afront mi0)))
+               (loop (+ min-filled 1 (line-cost 0))
+                     (or backwards-aff 0)
+                     0
+                     0
+                     (add1 i))]
+              [{'cross _}
+               (unless (= i first-i)
+                 (set-full! (behind mi1)))
+               (set-full! mi1)
+               (unless (= i last-i)
+                 (set-full! (afront mi1)))
+               (loop (+ min-filled 1 (line-cost 1))
+                     (or backwards-aff 1)
+                     1
+                     1
+                     (add1 i))]
+              [{'full 'full}
+               (loop (+ min-filled 2)
+                     (or backwards-aff (if (= i first-i) 'both 'start))
+                     (if (= i last-i) 'both 'end)
+                     #f
+                     (add1 i))]
+              [{'full 'empty}
+               (define forwards-aff* (if (last-aff? 0) forwards-aff 'both))
+               (if (line-aff? 0)
+                   (loop (+ min-filled 1) backwards-aff forwards-aff* 0 (add1 i))
+                   (loop (+ min-filled 2) (or backwards-aff 'both) forwards-aff* #f (add1 i)))]
+              [{'empty 'full}
+               (define forwards-aff* (if (last-aff? 1) forwards-aff 'both))
+               (if (line-aff? 1)
+                   (loop (+ min-filled 1) backwards-aff forwards-aff* 1 (add1 i))
+                   (loop (+ min-filled 2) (or backwards-aff 'both) forwards-aff* #f (add1 i)))]
+              [{'empty 'empty}
+               (loop (+ min-filled 1) backwards-aff forwards-aff line-aff (add1 i))])])))
+
+     (values min-filled
+             (match* {backwards-aff first-aff}
+               [{'both          _        } #f]
+               [{(or 'start #f) (or 0 1) } first-aff]
+               [{0              (or 0 #f)} 0]
+               [{1              (or 1 #f)} 1]
+               [{_              _        } #f])
+             (match* {forwards-aff last-aff}
+               [{'both          _        } #f]
+               [{(or 'end #f)   (or 0 1) } last-aff]
+               [{0              (or 0 #f)} 0]
+               [{1              (or 1 #f)} 1]
+               [{_              _        } #f]))]))
 
 (module+ test
   (define (fill-forced-tiles-in-mega-span!* tiles first-bound last-bound)
     (define tiles* (array-map array->vector tiles))
-    (cons
-     (fill-forced-tiles-in-mega-span!
-      tiles* first-bound last-bound
-      #:set-full! (λ (mi) (tiles-set!/mega tiles* mi 'full)))
-     tiles*))
+    (define-values [min-filled backwards-aff forwards-aff]
+      (fill-forced-tiles-in-mega-span!
+       tiles* first-bound last-bound
+       #:set-full! (λ (mi) (tiles-set!/mega tiles* mi 'full))))
+    (array min-filled backwards-aff forwards-aff tiles*))
+
+  (check-equal? (fill-forced-tiles-in-mega-span!*
+                 #(#(empty empty full empty)
+                   #(empty full empty empty))
+                 (mega-placement-bound 1 1)
+                 (mega-placement-bound 0 2))
+                (array 3 #f #f
+                       #(#(empty empty full empty)
+                         #(empty full empty empty))))
+
+  (check-equal? (fill-forced-tiles-in-mega-span!*
+                 #(#(empty full  empty cross empty empty)
+                   #(empty empty empty empty full  empty))
+                 (mega-placement-bound 0 1)
+                 (mega-placement-bound 1 4))
+                (array 5 #f 1
+                       #(#(empty full  empty cross empty empty)
+                         #(empty empty full  full  full  empty))))
 
   (check-equal? (fill-forced-tiles-in-mega-span!*
                  #(#(empty cross empty)
                    #(empty empty empty))
                  (mega-placement-bound 1 0)
                  (mega-placement-bound 'both 2))
-                (cons 4 #(#(empty cross full)
-                          #(full  full  full))))
+                (array 4 1 #f
+                       #(#(empty cross full)
+                         #(full  full  full))))
 
   (check-equal? (fill-forced-tiles-in-mega-span!*
                  #(#(cross cross cross empty empty)
                    #(empty empty empty empty empty))
                  (mega-placement-bound 1 1)
                  (mega-placement-bound 'either 4))
-                (cons 4 #(#(cross cross cross empty empty)
-                          #(empty full  full  full  empty))))
+                (array 4 1 1
+                       #(#(cross cross cross empty empty)
+                         #(empty full  full  full  empty))))
 
   (check-equal? (fill-forced-tiles-in-mega-span!*
                  #(#(cross empty empty)
                    #(full  full  empty))
                  (mega-placement-bound 'both 1)
                  (mega-placement-bound 'either 2))
-                (cons 2 #(#(cross empty empty)
-                          #(full  full  empty)))))
+                (array 2 #f #f
+                       #(#(cross empty empty)
+                         #(full  full  empty)))))

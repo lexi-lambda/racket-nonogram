@@ -532,10 +532,12 @@ solver to keep the logic simpler. |#
          ;; ...fill in boxes that must be filled to bridge filled boxes. Also,
          ;; keep track of the minimum number of tiles filled between the start
          ;; and end points, as well as whether it must have tiles in each line.
-         (define min-filled
+         (define-values [min-filled backwards-line-aff forwards-line-aff]
            (cond
              [(= first-full-i last-full-i)
-              (if (= first-full-line-i last-full-line-i) 1 2)]
+              (if (= first-full-line-i last-full-line-i)
+                  (values 1 first-full-line-i first-full-line-i)
+                  (values 2 #f #f))]
              [else
               (fill-forced-tiles-in-mega-span!
                clue-tiles
@@ -554,21 +556,15 @@ solver to keep the logic simpler. |#
 
          ;; Cross out boxes behind us.
          (let ()
-           (define line-aff (if (tile-cross? (tiles-ref/mega clue-tiles (opposite first-full-mi)))
-                                first-full-line-i
-                                #f))
            (match-define (array min-filled-i-0 min-filled-i-1)
-             (earliest-reachable/mega clue-tiles line-aff first-full-i max-left))
+             (earliest-reachable/mega clue-tiles backwards-line-aff first-full-i max-left))
            (clue-tiles-fill-line! clue-i 0 'cross 0 min-filled-i-0)
            (clue-tiles-fill-line! clue-i 1 'cross 0 min-filled-i-1))
 
          ;; Cross out boxes in front of us.
          (let ()
-           (define line-aff (if (tile-cross? (tiles-ref/mega clue-tiles (opposite last-full-mi)))
-                                last-full-line-i
-                                #f))
            (match-define (array max-filled-i-0 max-filled-i-1)
-             (latest-reachable/mega clue-tiles line-aff last-full-i max-left))
+             (latest-reachable/mega clue-tiles forwards-line-aff last-full-i max-left))
            (clue-tiles-fill-line! clue-i 0 'cross (add1 max-filled-i-0))
            (clue-tiles-fill-line! clue-i 1 'cross (add1 max-filled-i-1)))])
 
@@ -717,27 +713,28 @@ solver to keep the logic simpler. |#
           (raise-contradiction "no space for clue"))
 
         (define first-full-i (and~> first-full-mi mega-index-tile))
-        (match-define (cons _ start-bound)
-          (find-latest-tightest-placement-end+start/mega clue-tiles last-hole-mi clue))
-        (define start-upper-bounds (mega-placement-start-bound->line-upper-bounds start-bound))
+        (match (find-latest-tightest-placement-end+start/mega clue-tiles last-hole-mi clue)
+          [#f (raise-contradiction "no space for clue")]
+          [(cons _ start-bound)
+           (define start-upper-bounds (mega-placement-start-bound->line-upper-bounds start-bound))
 
-        (define (get-cross-start line-i)
-          (define first-full-bound
-            (if first-full-i
-                (if (tile-full? (tiles-ref/mega clue-tiles (mega-index line-i first-full-i)))
-                    (sub1 first-full-i)
-                    first-full-i)
-                num-tiles))
-          (define start-upper-bound (sub1 (array-ref start-upper-bounds line-i)))
-          (max 0 (min first-full-bound start-upper-bound)))
+           (define (get-cross-start line-i)
+             (define first-full-bound
+               (if first-full-i
+                   (if (tile-full? (tiles-ref/mega clue-tiles (mega-index line-i first-full-i)))
+                       (sub1 first-full-i)
+                       first-full-i)
+                   num-tiles))
+             (define start-upper-bound (sub1 (array-ref start-upper-bounds line-i)))
+             (max 0 (min first-full-bound start-upper-bound)))
 
-        (define cross-start-i-0 (get-cross-start 0))
-        (define cross-start-i-1 (get-cross-start 1))
-        (for ([prev-clue-i (in-list prev-clue-is)])
-          (clue-tiles-fill-line! prev-clue-i 0 'cross cross-start-i-0
-                                 #:contradiction-reason contradiction-reason)
-          (clue-tiles-fill-line! prev-clue-i 1 'cross cross-start-i-1
-                                 #:contradiction-reason contradiction-reason)))
+           (define cross-start-i-0 (get-cross-start 0))
+           (define cross-start-i-1 (get-cross-start 1))
+           (for ([prev-clue-i (in-list prev-clue-is)])
+             (clue-tiles-fill-line! prev-clue-i 0 'cross cross-start-i-0
+                                    #:contradiction-reason contradiction-reason)
+             (clue-tiles-fill-line! prev-clue-i 1 'cross cross-start-i-1
+                                    #:contradiction-reason contradiction-reason))]))
 
       ;; cross off tiles in next clue’s range that would necessarily overlap with us
       (define next-clue-is (next-clues clue-i))
@@ -748,27 +745,29 @@ solver to keep the logic simpler. |#
           (raise-contradiction "no space for clue"))
 
         (define last-full-i (and~> last-full-mi mega-index-tile))
-        (match-define (cons _ end-bound)
-          (find-earliest-tightest-placement-start+end/mega clue-tiles first-hole-mi clue))
-        (define end-lower-bounds (mega-placement-end-bound->line-lower-bounds end-bound))
+        (match (find-earliest-tightest-placement-start+end/mega clue-tiles first-hole-mi clue)
+          [#f
+           (raise-contradiction "no space for clue")]
+          [(cons _ end-bound)
+           (define end-lower-bounds (mega-placement-end-bound->line-lower-bounds end-bound))
 
-        (define (get-cross-end line-i)
-          (define last-full-bound
-            (if last-full-i
-                (if (tile-full? (tiles-ref/mega clue-tiles (mega-index line-i last-full-i)))
-                    (add1 last-full-i)
-                    last-full-i)
-                0))
-          (define end-lower-bound (+ (array-ref end-lower-bounds line-i) 2))
-          (min num-tiles (max last-full-bound end-lower-bound)))
+           (define (get-cross-end line-i)
+             (define last-full-bound
+               (if last-full-i
+                   (if (tile-full? (tiles-ref/mega clue-tiles (mega-index line-i last-full-i)))
+                       (add1 last-full-i)
+                       last-full-i)
+                   0))
+             (define end-lower-bound (+ (array-ref end-lower-bounds line-i) 2))
+             (min num-tiles (max last-full-bound end-lower-bound)))
 
-        (define cross-end-i-0 (get-cross-end 0))
-        (define cross-end-i-1 (get-cross-end 1))
-        (for ([prev-clue-i (in-list next-clue-is)])
-          (clue-tiles-fill-line! prev-clue-i 0 'cross 0 cross-end-i-0
-                                 #:contradiction-reason contradiction-reason)
-          (clue-tiles-fill-line! prev-clue-i 1 'cross 0 cross-end-i-1
-                                 #:contradiction-reason contradiction-reason))))
+           (define cross-end-i-0 (get-cross-end 0))
+           (define cross-end-i-1 (get-cross-end 1))
+           (for ([prev-clue-i (in-list next-clue-is)])
+             (clue-tiles-fill-line! prev-clue-i 0 'cross 0 cross-end-i-0
+                                    #:contradiction-reason contradiction-reason)
+             (clue-tiles-fill-line! prev-clue-i 1 'cross 0 cross-end-i-1
+                                    #:contradiction-reason contradiction-reason))])))
 
     ;; -------------------------------------------------------------------------
 
@@ -927,6 +926,11 @@ solver to keep the logic simpler. |#
                                           #(full empty empty empty empty)))
                 #(#(full full  cross empty empty)
                   #(full cross cross empty empty)))
+
+  (check-equal? (solve-line/mega '(3) #(#(full  empty cross)
+                                        #(empty empty empty)))
+                #(#(full  empty cross)
+                  #(empty empty cross)))
 
   (check-equal? (solve-line/mega '(3 4 #[(1 1) ()])
                                  #(#(empty empty empty empty empty empty empty empty)
