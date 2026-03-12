@@ -42,6 +42,44 @@
     [_
      (tiles-ref/mega (clues-ref clue-tiless clue-i) mi)]))
 
+#| Note [Mirror mega 2 clue tiles]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Mega 2 clues are particularly restrictive, so much so that it can be useful to
+think of them as “in between” a single-line clue and a proper mega clue. In many
+ways, they behave like a hybrid of both:
+
+  * Like mega clues, mega 2 clues span both lines.
+
+  * However, like single-line clues, mega 2 clues only need a single tiles
+    vector to track their placement restrictions, as they are always symmetrical
+    across the mega line axis. That is, crosses and filled tiles in one line of
+    a mega 2 can always be mirrored to the other line.
+
+  * Like single-line clues, mega 2 clues have exactly one fixed shape.
+
+Another way of thinking of mega 2 clues is that they are analogous to a single-
+line 1 clue *in a non-mega line*. To illustrate this point, consider a line
+consisting entirely of mega 2 clues: solving this line is precisely identical to
+solving a non-mega line of the same number of 1 clues. The only difference
+between a line of mega 2 clues and a single line of 1 clues is the constraints
+the mega line imposes on the cross axis, which are irrelevant when line solving.
+
+For the most part, we still treat mega 2 clues like other mega clues in our line
+solver, as they do behave more like mega clues than single-line clues do in mega
+lines. However, we actually use *sharing* to make the mirroring of mega 2 clue
+tiles mostly automatic: both lines are represented by the same mutable vector.
+This is a cute simplification, but it unfortunately doesn’t really spare us from
+treating it as a special case:
+
+  * When writing a 'full tile to a mega 2 clue, we must take care to transfer
+    the tile to *both* lines of the board.
+
+  * Similarly, we must place crosses on both lines of other clue tiles.
+
+In principle, it could be considerably more efficient to treat mega 2 clues
+specially in other ways, too, but for now, we just use the normal mega clue
+solver to keep the logic simpler. |#
+
 ;; do-solve-line : mega-line-clues? mega-tile-line? -> (or/c line-solution? 'error)
 (define (do-solve-line clues-lst user-tiles)
   (parameterize ([current-gained-information? #f])
@@ -54,6 +92,11 @@
     (define (make-empty-tiles/mega)
       (array (make-empty-tiles)
              (make-empty-tiles)))
+
+    ;; see Note [Mirror mega 2 clue tiles]
+    (define (make-empty-tiles/mega-2)
+      (define tiles (make-empty-tiles))
+      (array tiles tiles))
 
     ;; `unassigned-user-tiles` tracks all tiles filled by the user that have not
     ;; yet been claimed by any clues.
@@ -125,6 +168,8 @@
                   (for/array #:length (array-length line-1)
                              ([i (in-range (array-length line-1))])
                     (make-empty-tiles)))]
+          [2
+           (make-empty-tiles/mega-2)]
           [_
            (make-empty-tiles/mega)])))
 
@@ -231,18 +276,23 @@
 
         ; propagate filled tiles to board and cross other clues
         (when (tile-full? val)
-          (tiles-set!/mega unassigned-user-tiles mi 'empty #:track? #f)
-          (board-set!/mega mi 'full)
-          (for ([other-i (in-array (line-clue-indexes (mega-index-line mi)))]
-                #:unless (equal? clue-i other-i))
-            (clue-tiles-set!/mega other-i mi 'cross
-                                  #:contradiction-reason "tile claimed by multiple clues"))
+          (define (transfer! mi)
+            (tiles-set!/mega unassigned-user-tiles mi 'empty #:track? #f)
+            (board-set!/mega mi 'full)
+            (for ([other-i (in-array (line-clue-indexes (mega-index-line mi)))]
+                  #:unless (equal? clue-i other-i))
+              (clue-tiles-set!/mega other-i mi 'cross
+                                    #:contradiction-reason "tile claimed by multiple clues")))
+          (transfer! mi)
+          (cond
+            [(single-line-index? clue-i)
+             (define opposite-mi (opposite mi))
+             (board-set!/mega opposite-mi 'cross
+                              #:contradiction-reason "single-line clue opposes full tile")]
 
-          ; if this is a single-line clue, cross opposite tiles
-          (when (single-line-index? clue-i)
-            (define opposite-mi (opposite mi))
-            (board-set!/mega opposite-mi 'cross
-                             #:contradiction-reason "single-line clue opposes full tile")))))
+            ;; see Note [Mirror mega 2 clue tiles]
+            [(eqv? (clues-ref clues clue-i) 2)
+             (transfer! (opposite mi))]))))
 
     (define (clue-tiles-fill!/mega clue-i val [start-mi 0] [end-mi num-tiles/mega]
                                    #:contradiction-reason [contradiction-reason (current-contradiction-reason)])
@@ -1016,4 +1066,9 @@
   (check-equal? (analyze-line/mega '(#[(1) (1)] 2 2)
                                    #(#(empty full empty empty empty empty)
                                      #(full  full empty empty empty empty)))
-                'error))
+                'error)
+
+  (check-equal? (analyze-line/mega '(2 2 4)
+                                   #(#(empty empty cross full cross empty cross empty empty)
+                                     #(empty empty cross full cross empty full  empty empty)))
+                '(pending done pending)))

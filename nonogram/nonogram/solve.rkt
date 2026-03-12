@@ -26,8 +26,8 @@
           [analyze-puzzle (-> puzzle? board-analysis?)]
           [reanalyze-lines-at (-> puzzle? board-analysis? integer-point? board-analysis?)]
 
-          [solve-puzzle-axis (-> puzzle? axis? puzzle?)]
-          [solve-puzzle (-> puzzle? puzzle?)]))
+          [solve-puzzle-axis (-> puzzle? axis? (or/c puzzle? 'error))]
+          [solve-puzzle (-> puzzle? (or/c puzzle? 'error))]))
 
 ;; -----------------------------------------------------------------------------
 
@@ -86,31 +86,42 @@
 
 ;; -----------------------------------------------------------------------------
 
-;; solve-puzzle-axis : puzzle? axis? -> puzzle?
+;; solve-puzzle-axis : puzzle? axis? -> (or/c puzzle? 'error)
 (define (solve-puzzle-axis pz axis)
-  (define lcs+ls (puzzle-axis-clues+lines pz axis))
-  (define new-board
-    (~> (for/list ([lc+l (in-array lcs+ls)])
-          (match lc+l
-            [(cons (line-clues 'single clue-line) tile-line)
-             (list (solve-line clue-line tile-line))]
-            [(cons (line-clues 'mega clue-line) mega-tile-line)
-             (array->list (solve-line/mega clue-line mega-tile-line))]))
-        append*
-        list->array
-        (lines->board axis)))
-  (struct-copy puzzle pz [board new-board]))
+  (let/ec bail
+    (define (bail-on-error v)
+      (match v
+        ['error (bail 'error)]
+        [_ v]))
 
-;; solve-puzzle : puzzle? -> puzzle?
+    (define lcs+ls (puzzle-axis-clues+lines pz axis))
+    (define new-board
+      (~> (for/list ([lc+l (in-array lcs+ls)])
+            (match lc+l
+              [(cons (line-clues 'single clue-line) tile-line)
+               (list (bail-on-error (solve-line clue-line tile-line)))]
+              [(cons (line-clues 'mega clue-line) mega-tile-line)
+               (array->list (bail-on-error (solve-line/mega clue-line mega-tile-line)))]))
+          append*
+          list->array
+          (lines->board axis)))
+    (struct-copy puzzle pz [board new-board])))
+
+;; solve-puzzle : puzzle? -> (or/c puzzle? 'error)
 (define (solve-puzzle pz)
   (let loop ([old-pz pz])
-    (define new-pz (solve-puzzle-axis (solve-puzzle-axis old-pz 'row) 'column))
-    (if (equal? old-pz new-pz)
-        old-pz
-        (loop new-pz))))
+    (match (solve-puzzle-axis old-pz 'row)
+      ['error 'error]
+      [new-pz
+       (match (solve-puzzle-axis new-pz 'column)
+         ['error 'error]
+         [new-pz
+          (if (equal? old-pz new-pz)
+              old-pz
+              (loop new-pz))])])))
 
 (module+ test
   (for ([puzzle-entry (in-list all-puzzles)])
     (match-define (cons name pz) puzzle-entry)
     (with-check-info (['name name])
-      (check-not-exn (λ () (solve-puzzle pz))))))
+      (check-pred puzzle? (solve-puzzle pz)))))
