@@ -308,7 +308,12 @@
     (define bs (serialize-message (cons client-id action)))
     (for ([(conn client-id*) (in-mutable-hash connected-clients)]
           #:when (or echo? (not (client-id=? client-id client-id*))))
-      (thread (λ () (do-send! conn bs)))))
+      (thread
+       (λ ()
+         (with-handlers ([exn:fail? (λ (exn)
+                                      (enqueue-client-disconnected! conn)
+                                      (raise exn))])
+           (do-send! conn bs))))))
 
   ;; ---------------------------------------------------------------------------
 
@@ -340,8 +345,10 @@
               (do-send! conn (serialize-message (cons client-id (client-state-world this-cs))))
               (thread
                (λ ()
-                 (recv-loop conn #:client client-id)
-                 (enqueue-update! (cons 'client-disconnected conn))))]
+                 (dynamic-wind
+                  void
+                  (λ () (recv-loop conn #:client client-id))
+                  (λ () (enqueue-client-disconnected! conn)))))]
              [(cons 'client-disconnected conn)
               (hash-remove! connected-clients conn)]))
          (loop)))))
@@ -352,6 +359,9 @@
   (define (enqueue-local-actions! actions)
     (for ([action (in-list actions)])
       (enqueue-update! (client-action this-client-id action #f))))
+
+  (define (enqueue-client-disconnected! conn)
+    (enqueue-update! (cons 'client-disconnected conn)))
 
   (define shutdown-ws-server!
     (if listen-port
@@ -494,6 +504,20 @@
            racket/string
            "array.rkt"
            (submod "core.rkt" example))
+
+  (deserialize-module-guard
+   (λ (mod-path sym)
+     (define (bad-mod-path)
+       (raise-arguments-error 'deserialize-module-guard "not a relative library path"
+                              "module path" mod-path))
+     (match mod-path
+       [`(lib ,str)
+        (unless (and (relative-path? str)
+                     (andmap path-for-some-system?
+                             (explode-path (simplify-path str #f))))
+          (bad-mod-path))]
+       [_
+        (bad-mod-path)])))
 
   (define (connect-string->ws-url str)
     (match (string-split str ":")
