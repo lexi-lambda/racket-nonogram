@@ -33,4 +33,4 @@ Internally, racket-nonogram includes a line solver to automatically cross off co
 * **F2** runs the line solver on all columns.
 * **F3** runs the line solver repeatedly on both rows and columns until it reaches a fixed point.
 
-Not all puzzles can be fully solved by the line solver. Some puzzles require utilizing information from both row and colum clues simultaneously, and the solver currently does not attempt to guess. (Also, the mega line solver is not currently exhaustive, though it does an okay job on most puzzles.)
+Not all puzzles can be fully solved by the line solver. Some puzzles require utilizing information from both row and column clues simultaneously, and the solver currently does not attempt to guess. (Also, the mega line solver is not currently exhaustive, though it does an okay job on most puzzles.)

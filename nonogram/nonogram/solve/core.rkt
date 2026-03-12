@@ -112,7 +112,7 @@
           [find-first/mega (-> mega-tiles/c tile-predicate/c (or/c mega-index? #f))]
           [find-last/mega (-> mega-tiles/c tile-predicate/c (or/c mega-index? #f))]
           [find-next-hole/mega (-> mega-tiles/c mega-index? (or/c mega-index? #f))]
-          [find-singular-hole/mega (-> mega-tiles/c (or/c (cons/c mega-index? mega-index?) #f))]
+          [find-singular-hole/mega (-> mega-tiles/c (or/c (array/c mega-index? mega-index? natural?) #f))]
 
           [connected-region-spans-both-lines?
            (-> mega-index? mega-index? clue? boolean?)]
@@ -498,9 +498,9 @@
   (match (find-next-hole/mega tiles 0)
     [#f #f]
     [start-mi
-     (define end-mi (hole-end/mega tiles start-mi))
+     (define-values [size end-mi] (hole-size+end/mega tiles start-mi))
      (match (find-next-hole/mega tiles end-mi)
-       [#f (cons start-mi end-mi)]
+       [#f (array start-mi end-mi size)]
        [_  #f])]))
 
 ;; -----------------------------------------------------------------------------

@@ -701,6 +701,41 @@
              (line-clues 'single '(4 2))
              (line-clues 'mega '(6 #[(1) ()]))))))
 
+  (define puzzle-s1-m150
+    (clues->puzzle
+     (board-clues
+      (array (line-clues 'single '(1 1 1 1 1))
+             (line-clues 'single '(5 1 3 3))
+             (line-clues 'single '(1 5 2 2))
+             (line-clues 'single '(1 1 1 4 1 1))
+             (line-clues 'single '(2 5 3))
+             (line-clues 'single '(3 2 1 1 1 3))
+             (line-clues 'mega '(2 #[(1) (1 1)] 2 5 3 3))
+             (line-clues 'single '(2 5 3))
+             (line-clues 'single '(5 1 1 1 1 2))
+             (line-clues 'single '(1 1 1 1 3 4))
+             (line-clues 'single '(1 1 2 2 3 2 1))
+             (line-clues 'single '(2 1 11))
+             (line-clues 'mega '(#[(1) ()] 4 #[(1) (1)] 11 3 #[() (1)])))
+      (array (line-clues 'single '(2))
+             (line-clues 'single '(2 1 1))
+             (line-clues 'single '(1 2 3))
+             (line-clues 'single '(2 1 3 1))
+             (line-clues 'single '(1 2 2 2))
+             (line-clues 'single '(1 2 1 1 2 1))
+             (line-clues 'single '(1 1 2 2 1))
+             (line-clues 'single '(3 1 2 1))
+             (line-clues 'single '(4 3 2 1))
+             (line-clues 'single '(1 2 1 3))
+             (line-clues 'single '(5 1 3))
+             (line-clues 'single '(3 2 1 3))
+             (line-clues 'single '(1 4 5))
+             (line-clues 'single '(2 1 1 6))
+             (line-clues 'mega '(3 #[(2 1) (1)] 7))
+             (line-clues 'mega '(3 #[(1) (2)] 12))
+             (line-clues 'single '(12 1))
+             (line-clues 'single '(1 3 2 1))))))
+
   (define puzzle-s5-m150
     (clues->puzzle
      (board-clues
@@ -758,6 +793,7 @@
           (cons "S5 M147" puzzle-s5-m147)
           (cons "S5 M148" puzzle-s5-m148)
           (cons "S5 M149" puzzle-s5-m149)
+          (cons "S1 M150" puzzle-s1-m150)
           (cons "S5 M150" puzzle-s5-m150)))
 
   (define all-puzzle-names (map car all-puzzles))
