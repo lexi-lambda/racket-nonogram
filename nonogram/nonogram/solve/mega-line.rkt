@@ -393,29 +393,6 @@ solver to keep the logic simpler. |#
         [_
          (neighbor-matching?/mega (clues-ref clue-tiless clue-i) mi tile-full?)]))
 
-    ;; Returns the minimum number of tiles that may be filled to connect
-    ;; `first-mi` to `last-mi`, including both endpoints.
-    (define/who (shortest-path-size tiles first-mi last-mi)
-      (define last-i (mega-index-tile last-mi))
-      (let loop ([size 1]
-                 [mi first-mi])
-        (cond
-          [(= mi last-mi) size]
-          [else
-           (define i (mega-index-tile mi))
-           (cond
-             [(= i last-i) (add1 size)]
-             [(tile-hole? (tiles-ref/mega tiles (afront mi)))
-              (loop (add1 size) (afront mi))]
-             [(and (tile-hole? (tiles-ref/mega tiles (opposite mi)))
-                   (tile-hole? (tiles-ref/mega tiles (afront (opposite mi)))))
-              (loop (+ size 2) (afront (opposite mi)))]
-             [else
-              (raise-arguments-error who "no path"
-                                     "first index" first-mi
-                                     "last index" last-mi
-                                     "tiles" tiles)])])))
-
     ;; -------------------------------------------------------------------------
 
     (define (gain-information-from-self/single clue-i)
@@ -803,21 +780,29 @@ solver to keep the logic simpler. |#
 
            (define candidate-clue-is
              (for/fold ([candidate-clue-is '()])
-                       ([clue-i (in-array relevant-clue-indexes)])
+                       ([clue-i (in-array relevant-clue-indexes)]
+                        #:unless (clue-solved? clue-i))
+               (define tiles-left (clues-ref clue-tiles-left clue-i))
                (define compatibility
-                 (for/or ([full-mi (in-range full-start-mi full-end-mi)]
-                          #:when (tile-full? (tiles-ref/mega unassigned-user-tiles full-mi)))
-                   (cond
-                     [(tile-cross? (clue-tiles-ref/mega clue-i full-mi))
-                      'cannot-claim]
-                     [(clue-neighbor-full? clue-i full-mi)
-                      'must-claim]
-                     [else #f])))
+                 (if (> full-size tiles-left)
+                     'cannot-claim
+                     (for/or ([full-mi (in-range full-start-mi full-end-mi)]
+                              #:when (tile-full? (tiles-ref/mega unassigned-user-tiles full-mi)))
+                       (cond
+                         [(tile-cross? (clue-tiles-ref/mega clue-i full-mi))
+                          'cannot-claim]
+                         [(clue-neighbor-full? clue-i full-mi)
+                          'must-claim]
+                         [else #f]))))
                #:final (eq? compatibility 'must-claim)
                (match compatibility
                  ['cannot-claim
-                  (clue-tiles-fill!/mega clue-i 'cross full-start-mi full-end-mi
-                                         #:contradiction-reason "user tile borders clue that cannot claim it")
+                  (parameterize ([current-contradiction-reason "user tile borders clue that cannot claim it"])
+                    (define (set-cross! mi)
+                      (clue-tiles-set!/mega clue-i mi 'cross))
+                    (tiles-set-bounded-before!/mega board-tiles full-start-mi #:set-cross! set-cross!)
+                    (clue-tiles-fill!/mega clue-i 'cross full-start-mi full-end-mi)
+                    (tiles-set-bounded-after!/mega board-tiles (sub1 full-end-mi) #:set-cross! set-cross!))
                   candidate-clue-is]
                  ['must-claim (list clue-i)]
                  [#f (cons clue-i candidate-clue-is)])))
@@ -832,14 +817,44 @@ solver to keep the logic simpler. |#
                                       #:contradiction-reason "user tile borders clue that cannot claim it"))]
              [_
               ;; TODO: Intersect possible placements a la the single-line solver.
-              (define single-only? (for/and ([clue-i (in-list candidate-clue-is)])
-                                     (single-line-index? clue-i)))
-              (when single-only?
-                (board-fill-line! (opposite (mega-index-line full-start-mi))
-                                  'cross
-                                  (mega-index-tile full-start-mi)
-                                  (mega-index-tile (add1 full-end-mi))
-                                  #:contradiction-reason "single-line clue opposes full tile"))])
+              (define-values [any-single? any-mega-2? any-other?]
+                (for/fold ([any-single? #f]
+                           [any-mega-2? #f]
+                           [any-other? #f])
+                          (#:break any-other?
+                           [clue-i (in-list candidate-clue-is)])
+                  (cond
+                    [(single-line-index? clue-i)
+                     (values #t any-mega-2? any-other?)]
+                    [else
+                     (match (clues-ref clues clue-i)
+                       [2 (values any-single? #t any-other?)]
+                       [_ (values any-single? any-mega-2? #t)])])))
+              (cond
+                [any-other?
+                 ;; TODO: Generalize placement intersection to all mega clues.
+                 (void)]
+                [any-single?
+                 ;; TODO: Intersect possible placements a la the single-line solver.
+                 (define single-only? (not any-mega-2?))
+                 (when single-only?
+                   (board-fill-line! (opposite (mega-index-line full-start-mi))
+                                     'cross
+                                     (mega-index-tile full-start-mi)
+                                     (mega-index-tile (add1 full-end-mi))
+                                     #:contradiction-reason "single-line clue opposes full tile"))]
+                [else
+                 (unless (= full-size 2)
+                   (board-set!/mega (opposite full-start-mi) 'full
+                                    #:contradiction-reason "tile claimed by mega 2 clue opposes cross"))
+                 (define full-i (mega-index-tile full-start-mi))
+                 (parameterize ([current-contradiction-reason "filled tile adjacent to mega 2 clue"])
+                   (unless (zero? full-i)
+                     (board-set!/mega (mega-index 0 (sub1 full-i)) 'cross)
+                     (board-set!/mega (mega-index 1 (sub1 full-i)) 'cross))
+                   (unless (= (add1 full-i) num-tiles)
+                     (board-set!/mega (mega-index 0 (add1 full-i)) 'cross)
+                     (board-set!/mega (mega-index 1 (add1 full-i)) 'cross)))])])
 
            (loop (add1 full-end-mi))])))
 
@@ -958,7 +973,13 @@ solver to keep the logic simpler. |#
                                  #(#(empty empty empty full  empty empty empty empty empty empty)
                                    #(empty empty empty empty empty full  empty empty empty cross)))
                 #(#(empty empty empty full  empty empty empty empty empty empty)
-                  #(empty empty empty cross empty full  empty empty empty cross))))
+                  #(empty empty empty cross empty full  empty empty empty cross)))
+
+  (check-equal? (solve-line/mega '(5 2 2 #[() (1)])
+                                 #(#(full empty empty full  empty full  empty empty cross cross)
+                                   #(full empty empty empty empty empty empty empty cross empty)))
+                #(#(full empty empty full  cross full cross empty cross cross)
+                  #(full empty empty empty cross full cross empty cross empty))))
 
 ;; -----------------------------------------------------------------------------
 

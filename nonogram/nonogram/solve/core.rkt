@@ -101,6 +101,8 @@
           [bounded-afront?/mega (-> mega-tiles/c mega-index? boolean?)]
           [bounded-before?/mega (-> mega-tiles/c mega-index? boolean?)]
           [bounded-after?/mega (-> mega-tiles/c mega-index? boolean?)]
+          [tiles-set-bounded-before!/mega (-> mega-tiles/c mega-index? #:set-cross! (-> mega-index? any) void?)]
+          [tiles-set-bounded-after!/mega (-> mega-tiles/c mega-index? #:set-cross! (-> mega-index? any) void?)]
           [neighbor-matching?/mega (-> mega-tiles/c mega-index? tile-predicate/c boolean?)]
           [neighbors-count/mega (-> mega-tiles/c mega-index? tile-predicate/c (integer-in 0 3))]
 
@@ -452,22 +454,49 @@
   (define at-start? (zero? (mega-index-tile mi)))
   (and (or at-start?
            (tile-cross? (tiles-ref/mega tiles (behind mi))))
-       (or (tile-cross? (tiles-ref/mega tiles (opposite mi)))
-           (match (mega-index-line mi)
-             [0 (or at-start?
-                    (tile-cross? (tiles-ref/mega tiles (sub1 mi))))]
-             [1 #f]))))
+       (let ()
+         (define opposite-tile (tiles-ref/mega tiles (opposite mi)))
+         (or (tile-cross? opposite-tile)
+             (match (mega-index-line mi)
+               [0 (and (tile-full? opposite-tile)
+                       (or at-start?
+                           (tile-cross? (tiles-ref/mega tiles (sub1 mi)))))]
+               [1 #f])))))
 
 (define (bounded-after?/mega tiles mi)
   (define at-end? (= (add1 (mega-index-tile mi))
                      (mega-tiles-length tiles)))
   (and (or at-end?
            (tile-cross? (tiles-ref/mega tiles (afront mi))))
-       (or (tile-cross? (tiles-ref/mega tiles (opposite mi)))
-           (match (mega-index-line mi)
-             [0 #f]
-             [1 (or at-end?
-                    (tile-cross? (tiles-ref/mega tiles (add1 mi))))]))))
+       (let ()
+         (define opposite-tile (tiles-ref/mega tiles (opposite mi)))
+         (or (tile-cross? opposite-tile)
+             (match (mega-index-line mi)
+               [0 #f]
+               [1 (and (tile-full? opposite-tile)
+                       (or at-end?
+                           (tile-cross? (tiles-ref/mega tiles (add1 mi)))))])))))
+
+(define (tiles-set-bounded-before!/mega tiles mi #:set-cross! set-cross!)
+  (define at-start? (zero? (mega-index-tile mi)))
+  (unless at-start?
+    (set-cross! (behind mi)))
+  (match (mega-index-line mi)
+    [0 (when (and (not at-start?)
+                  (tile-full? (tiles-ref/mega tiles (opposite mi))))
+         (set-cross! (sub1 mi)))]
+    [1 (set-cross! (sub1 mi))]))
+
+(define (tiles-set-bounded-after!/mega tiles mi #:set-cross! set-cross!)
+  (define at-end? (= (add1 (mega-index-tile mi))
+                     (mega-tiles-length tiles)))
+  (unless at-end?
+    (set-cross! (afront mi)))
+  (match (mega-index-line mi)
+    [0 (set-cross! (add1 mi))]
+    [1 (when (and (not at-end?)
+                  (tile-full? (tiles-ref/mega tiles (opposite mi))))
+         (set-cross! (add1 mi)))]))
 
 (define (neighbor-matching?/mega tiles mi pred?)
   (or (pred? (tiles-ref/mega tiles (opposite mi)))
