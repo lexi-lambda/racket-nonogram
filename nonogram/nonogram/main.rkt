@@ -502,7 +502,7 @@
 (module+ main
   (require racket/cmdline
            racket/string
-           "array.rkt"
+           "lib/array.rkt"
            (submod "core.rkt" example))
 
   (deserialize-module-guard

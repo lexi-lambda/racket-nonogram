@@ -6,13 +6,14 @@
          racket/mutability
          threading
          toolbox/who
-         "../array.rkt"
-         "../core.rkt")
+         "../core.rkt"
+         "../lib/array.rkt"
+         "../lib/contract.rkt")
 
 (module+ test
   (require rackunit))
 
-(provide (contract-out
+(provide (maybe-contract-out
           [clue-analysis? flat-contract?]
           [single-line-analysis? flat-contract?]
           [mega-line-analysis? flat-contract?]
@@ -31,7 +32,7 @@
           [tile-hole? tile-predicate/c])
 
          (struct-out exn:contradiction)
-         (contract-out
+         (maybe-contract-out
           [raise-contradiction (-> string? none/c)]
           [current-contradiction-reason (parameter/c (or/c string? #f))]
           [current-gained-information? (parameter/c boolean?)]
@@ -79,7 +80,7 @@
          afront
          behind
 
-         (contract-out
+         (maybe-contract-out
           [mega-tiles/c contract?]
           [mutable-mega-tiles/c contract?]
           [mega-tiles-length (-> mega-tiles/c natural?)]

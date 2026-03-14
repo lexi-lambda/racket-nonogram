@@ -4,14 +4,15 @@
          racket/list
          racket/match
          threading
-         "../array.rkt"
          "../core.rkt"
+         "../lib/array.rkt"
+         "../lib/contract.rkt"
          "core.rkt")
 
 (module+ test
   (require rackunit))
 
-(provide (contract-out
+(provide (maybe-contract-out
           [analyze-line (-> single-line-clues? tile-line? line-clue-analysis?)]
           [solve-line (-> single-line-clues? tile-line? (or/c tile-line? 'error))]))
 

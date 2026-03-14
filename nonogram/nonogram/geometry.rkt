@@ -7,10 +7,11 @@
          threading
          toolbox/pict
          toolbox/print
-         toolbox/who)
+         toolbox/who
+         "lib/contract.rkt")
 
 (provide integer-point?
-         (contract-out
+         (maybe-contract-out
           (struct point ([x real?] [y real?]))
           [point- (-> point? point? ... point?)]
           [truncate-point (-> point? integer-point?)]
@@ -41,7 +42,7 @@
 
          tf:identity
          tf*
-         (contract-out
+         (maybe-contract-out
           (struct transformation ([xx real?]
                                   [yx real?]
                                   [x0 real?]

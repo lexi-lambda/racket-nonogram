@@ -4,9 +4,9 @@
          racket/list
          racket/match
          threading
-         "array.rkt"
          "core.rkt"
          "geometry.rkt"
+         "lib/array.rkt"
          "solve/core.rkt"
          "solve/mega-line.rkt"
          "solve/single-line.rkt")

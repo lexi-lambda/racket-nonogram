@@ -5,14 +5,15 @@
          racket/match
          threading
          toolbox/who
-         "../array.rkt"
          "../core.rkt"
+         "../lib/array.rkt"
+         "../lib/contract.rkt"
          "core.rkt")
 
 (module+ test
   (require rackunit))
 
-(provide (contract-out
+(provide (maybe-contract-out
           [analyze-line/mega
            (-> mega-line-clues? mega-tile-line? line-clue-analysis?)]
           [solve-line/mega (-> mega-line-clues? mega-tile-line? (or/c mega-tile-line? 'error))]))

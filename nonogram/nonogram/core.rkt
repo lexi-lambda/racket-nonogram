@@ -10,7 +10,8 @@
          threading
          toolbox/who
          xml
-         "array.rkt")
+         "lib/array.rkt"
+         "lib/contract.rkt")
 
 (module+ example
   (provide board-1
@@ -28,7 +29,7 @@
   (require rackunit
            (submod ".." example)))
 
-(provide (contract-out
+(provide (maybe-contract-out
           [axis? flat-contract?]
           [axis-opposite (-> axis? axis?)]
 
@@ -667,6 +668,37 @@
              (line-clues 'mega '(3 6 6 #[() (1)]))
              (line-clues 'single '(4 5))))))
 
+  (define puzzle-s1-m149
+    (clues->puzzle
+     (board-clues
+      (array (line-clues 'single '(8 2))
+             (line-clues 'single '(1 1 2 6))
+             (line-clues 'single '(1 1 1 4 1 1))
+             (line-clues 'mega '(5 #[(1 1 1) (1 1 1)] 6 #[(1 1) (1 1)]))
+             (line-clues 'mega '(3 #[(1 1 1) (1 1)] 11 #[(1 1) (1 1)]))
+             (line-clues 'single '(1 1 1 7 1 1))
+             (line-clues 'single '(2 1 4 3 3))
+             (line-clues 'single '(7 5))
+             (line-clues 'mega '(6 #[(1 1 1) (1 1 1)] 8))
+             (line-clues 'mega '(5 4 #[(1 1 1) (1 1 1)] 4 #[(1) (1)]))
+             (line-clues 'single '(2 1 1 1 7)))
+      (array (line-clues 'single '(7 3))
+             (line-clues 'single '(1 3 1 2 2))
+             (line-clues 'single '(2 1 1 1 2 1))
+             (line-clues 'single '(1 1 1 1 3 1))
+             (line-clues 'single '(2 1 1 1 4))
+             (line-clues 'mega '(2 #[(1 1) (1 1)] 9 #[() (1)]))
+             (line-clues 'single '(1 1 1 2 1 1))
+             (line-clues 'single '(2 1 4 1 1 1))
+             (line-clues 'mega '(12 #[(1 1) (1 1 1)]))
+             (line-clues 'mega '(13 #[(1 1) (1 1 1)]))
+             (line-clues 'single '(1 1 1 3 1 2))
+             (line-clues 'single '(3 1 1 7))
+             (line-clues 'mega '(4 #[(1 1) ()] 8 2))
+             (line-clues 'single '(1 1 1 3 1 1))
+             (line-clues 'single '(1 1 1 1 1))
+             (line-clues 'single '(1))))))
+
   (define puzzle-s5-m149
     (clues->puzzle
      (board-clues
@@ -792,6 +824,7 @@
           (cons "S5 M146" puzzle-s5-m146)
           (cons "S5 M147" puzzle-s5-m147)
           (cons "S5 M148" puzzle-s5-m148)
+          (cons "S1 M149" puzzle-s1-m149)
           (cons "S5 M149" puzzle-s5-m149)
           (cons "S1 M150" puzzle-s1-m150)
           (cons "S5 M150" puzzle-s5-m150)))

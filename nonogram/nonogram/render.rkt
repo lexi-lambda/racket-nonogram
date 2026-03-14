@@ -9,9 +9,9 @@
          racket/math
          threading
          toolbox/who
-         "array.rkt"
          "core.rkt"
          "geometry.rkt"
+         "lib/array.rkt"
          "logger.rkt"
          "solve.rkt")
 
