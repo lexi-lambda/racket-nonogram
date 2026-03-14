@@ -16,4 +16,5 @@
     "toolbox-lib"
     "toolbox-draw-lib"))
 (define build-deps
-  '("rackunit-lib"))
+  '("compiler-lib"
+    "rackunit-lib"))
