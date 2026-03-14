@@ -256,6 +256,11 @@ solver to keep the logic simpler. |#
     (define (clue-solved? clue-i)
       (zero? (clues-ref clue-tiles-left clue-i)))
 
+    ;; clue-any-full? : clue-index? -> boolean?
+    (define (clue-any-full? clue-i)
+      (< (clues-ref clue-tiles-left clue-i)
+         (clues-ref clues clue-i)))
+
     ;; board-set!/mega : mega-index? tile? -> void?
     (define (board-set!/mega mi val
                              #:contradiction-reason [contradiction-reason (current-contradiction-reason)])
@@ -393,6 +398,43 @@ solver to keep the logic simpler. |#
         [_
          (neighbor-matching?/mega (clues-ref clue-tiless clue-i) mi tile-full?)]))
 
+    (define/who (clue-tiles-set-bounded-before!/mega clue-i mi)
+      (match clue-i
+        [(single-line-index _ line-i _)
+         (unless (= line-i (mega-index-line mi))
+           (raise-arguments-error who "wrong line for single-line clue"
+                                  "clue-index" clue-i))
+         (define i (mega-index-tile mi))
+         (unless (zero? i)
+           (clue-tiles-set! clue-i (sub1 i) 'cross))]
+        [_
+         (tiles-set-bounded-before!/mega
+          board-tiles mi
+          #:set-cross! (λ (mi) (clue-tiles-set!/mega clue-i mi 'cross)))]))
+
+    (define/who (clue-tiles-set-bounded-after!/mega clue-i mi)
+      (match clue-i
+        [(single-line-index _ line-i _)
+         (unless (= line-i (mega-index-line mi))
+           (raise-arguments-error who "wrong line for single-line clue"
+                                  "clue-index" clue-i))
+         (define i (mega-index-tile mi))
+         (unless (= (add1 i) num-tiles)
+           (clue-tiles-set! clue-i (add1 i) 'cross))]
+        [_
+         (tiles-set-bounded-after!/mega
+          board-tiles mi
+          #:set-cross! (λ (mi) (clue-tiles-set!/mega clue-i mi 'cross)))]))
+
+    (define (clue-find-first/mega clue-i pred?)
+      (define clue-tiles (clues-ref clue-tiless clue-i))
+      (match clue-i
+        [(single-line-index _ line-i _)
+         (and~> (find-first clue-tiles pred?)
+                (mega-index line-i _))]
+        [_
+         (find-first/mega clue-tiles pred?)]))
+
     ;; -------------------------------------------------------------------------
 
     (define (gain-information-from-self/single clue-i)
@@ -410,28 +452,27 @@ solver to keep the logic simpler. |#
            (loop (+ i len))]))
 
       ;; If any boxes are filled...
-      (match (find-first clue-tiles tile-full?)
-        [#f (void)]
-        [first-full-i
-         (define last-full-i (find-last clue-tiles tile-full?))
+      (when (clue-any-full? clue-i)
+        (define first-full-i (find-first clue-tiles tile-full?))
+        (define last-full-i (find-last clue-tiles tile-full?))
 
-         ;; ...fill in boxes between filled boxes.
-         (clue-tiles-fill! clue-i 'full first-full-i (add1 last-full-i)
-                           #:contradiction-reason "clue is discontiguous")
+        ;; ...fill in boxes between filled boxes.
+        (clue-tiles-fill! clue-i 'full first-full-i (add1 last-full-i)
+                          #:contradiction-reason "clue is discontiguous")
 
-         ;; ...cross off tiles unreachable due to clue length.
-         (clue-tiles-fill! clue-i 'cross 0 (- last-full-i (sub1 clue))
-                           #:contradiction-reason "clue is too long")
-         (clue-tiles-fill! clue-i 'cross (+ first-full-i clue)
-                           #:contradiction-reason "clue is too long")
+        ;; ...cross off tiles unreachable due to clue length.
+        (clue-tiles-fill! clue-i 'cross 0 (- last-full-i (sub1 clue))
+                          #:contradiction-reason "clue is too long")
+        (clue-tiles-fill! clue-i 'cross (+ first-full-i clue)
+                          #:contradiction-reason "clue is too long")
 
-         ;; ...cross off all holes unreachable due to a separating cross.
-         (define prev-cross-i (find-prev clue-tiles first-full-i tile-cross?))
-         (when prev-cross-i
-           (clue-tiles-fill! clue-i 'cross 0 prev-cross-i))
-         (define next-cross-i (find-next clue-tiles first-full-i tile-cross?))
-         (when next-cross-i
-           (clue-tiles-fill! clue-i 'cross next-cross-i))])
+        ;; ...cross off all holes unreachable due to a separating cross.
+        (define prev-cross-i (find-prev clue-tiles first-full-i tile-cross?))
+        (when prev-cross-i
+          (clue-tiles-fill! clue-i 'cross 0 prev-cross-i))
+        (define next-cross-i (find-next clue-tiles first-full-i tile-cross?))
+        (when next-cross-i
+          (clue-tiles-fill! clue-i 'cross next-cross-i)))
 
       ;; ensure there is a hole for the clue to actually go
       (unless (find-next-hole clue-tiles 0)
@@ -494,56 +535,55 @@ solver to keep the logic simpler. |#
           (clue-tiles-set!/mega clue-i (mega-index line-i line-first-hole-i) 'full)))
 
       ;; If any boxes are filled...
-      (match (find-first/mega clue-tiles tile-full?)
-        [#f (void)]
-        [first-full-mi
-         (define last-full-mi (find-last/mega clue-tiles tile-full?))
-         (define first-full-line-i (mega-index-line first-full-mi))
-         (define first-full-i (mega-index-tile first-full-mi))
-         (define last-full-line-i (mega-index-line last-full-mi))
-         (define last-full-i (mega-index-tile last-full-mi))
+      (when (clue-any-full? clue-i)
+        (define first-full-mi (find-first/mega clue-tiles tile-full?))
+        (define last-full-mi (find-last/mega clue-tiles tile-full?))
+        (define first-full-line-i (mega-index-line first-full-mi))
+        (define first-full-i (mega-index-tile first-full-mi))
+        (define last-full-line-i (mega-index-line last-full-mi))
+        (define last-full-i (mega-index-tile last-full-mi))
 
-         (when (>= (- (add1 last-full-i) first-full-i) clue)
-           (raise-contradiction "clue is too long"))
+        (when (>= (- (add1 last-full-i) first-full-i) clue)
+          (raise-contradiction "clue is too long"))
 
-         ;; ...fill in boxes that must be filled to bridge filled boxes. Also,
-         ;; keep track of the minimum number of tiles filled between the start
-         ;; and end points, as well as whether it must have tiles in each line.
-         (define-values [min-filled backwards-line-aff forwards-line-aff]
-           (cond
-             [(= first-full-i last-full-i)
-              (if (= first-full-line-i last-full-line-i)
-                  (values 1 first-full-line-i first-full-line-i)
-                  (values 2 #f #f))]
-             [else
-              (fill-forced-tiles-in-mega-span!
-               clue-tiles
-               (mega-index->placement-bound first-full-mi)
-               (mega-index->placement-bound last-full-mi)
-               #:set-full!
-               (λ (mi)
-                 (clue-tiles-set!/mega clue-i mi 'full
-                                       #:contradiction-reason "clue is discontiguous")))]))
+        ;; ...fill in boxes that must be filled to bridge filled boxes. Also,
+        ;; keep track of the minimum number of tiles filled between the start
+        ;; and end points, as well as whether it must have tiles in each line.
+        (define-values [min-filled backwards-line-aff forwards-line-aff]
+          (cond
+            [(= first-full-i last-full-i)
+             (if (= first-full-line-i last-full-line-i)
+                 (values 1 first-full-line-i first-full-line-i)
+                 (values 2 #f #f))]
+            [else
+             (fill-forced-tiles-in-mega-span!
+              clue-tiles
+              (mega-index->placement-bound first-full-mi)
+              (mega-index->placement-bound last-full-mi)
+              #:set-full!
+              (λ (mi)
+                (clue-tiles-set!/mega clue-i mi 'full
+                                      #:contradiction-reason "clue is discontiguous")))]))
 
-         ;; ...cross out boxes unreachable due to clue length. Also, while we’re
-         ;; at it, cross out all holes unreachable due to separating crosses.
-         (when (> min-filled clue)
-           (raise-contradiction "clue is too long"))
-         (define max-left (- clue min-filled))
+        ;; ...cross out boxes unreachable due to clue length. Also, while we’re
+        ;; at it, cross out all holes unreachable due to separating crosses.
+        (when (> min-filled clue)
+          (raise-contradiction "clue is too long"))
+        (define max-left (- clue min-filled))
 
-         ;; Cross out boxes behind us.
-         (let ()
-           (match-define (array min-filled-i-0 min-filled-i-1)
-             (earliest-reachable/mega clue-tiles backwards-line-aff first-full-i max-left))
-           (clue-tiles-fill-line! clue-i 0 'cross 0 min-filled-i-0)
-           (clue-tiles-fill-line! clue-i 1 'cross 0 min-filled-i-1))
+        ;; Cross out boxes behind us.
+        (let ()
+          (match-define (array min-filled-i-0 min-filled-i-1)
+            (earliest-reachable/mega clue-tiles backwards-line-aff first-full-i max-left))
+          (clue-tiles-fill-line! clue-i 0 'cross 0 min-filled-i-0)
+          (clue-tiles-fill-line! clue-i 1 'cross 0 min-filled-i-1))
 
-         ;; Cross out boxes in front of us.
-         (let ()
-           (match-define (array max-filled-i-0 max-filled-i-1)
-             (latest-reachable/mega clue-tiles forwards-line-aff last-full-i max-left))
-           (clue-tiles-fill-line! clue-i 0 'cross (add1 max-filled-i-0))
-           (clue-tiles-fill-line! clue-i 1 'cross (add1 max-filled-i-1)))])
+        ;; Cross out boxes in front of us.
+        (let ()
+          (match-define (array max-filled-i-0 max-filled-i-1)
+            (latest-reachable/mega clue-tiles forwards-line-aff last-full-i max-left))
+          (clue-tiles-fill-line! clue-i 0 'cross (add1 max-filled-i-0))
+          (clue-tiles-fill-line! clue-i 1 'cross (add1 max-filled-i-1))))
 
       ;; Ensure there is a hole for the clue to actually go.
       (unless (find-next-hole/mega clue-tiles 0)
@@ -798,14 +838,18 @@ solver to keep the logic simpler. |#
                (match compatibility
                  ['cannot-claim
                   (parameterize ([current-contradiction-reason "user tile borders clue that cannot claim it"])
-                    (define (set-cross! mi)
-                      (clue-tiles-set!/mega clue-i mi 'cross))
-                    (tiles-set-bounded-before!/mega board-tiles full-start-mi #:set-cross! set-cross!)
+                    (clue-tiles-set-bounded-before!/mega clue-i full-start-mi)
                     (clue-tiles-fill!/mega clue-i 'cross full-start-mi full-end-mi)
-                    (tiles-set-bounded-after!/mega board-tiles (sub1 full-end-mi) #:set-cross! set-cross!))
+                    (clue-tiles-set-bounded-after!/mega clue-i (sub1 full-end-mi)))
                   candidate-clue-is]
                  ['must-claim (list clue-i)]
-                 [#f (cons clue-i candidate-clue-is)])))
+                 [#f
+                  (when (= full-size (clues-ref clues clue-i))
+                    ;; If the clue is precisely the same size as the filled region,
+                    ;; it can’t possibly border it, so add bounds before/after.
+                    (clue-tiles-set-bounded-before!/mega clue-i full-start-mi)
+                    (clue-tiles-set-bounded-after!/mega clue-i (sub1 full-end-mi)))
+                  (cons clue-i candidate-clue-is)])))
 
            (match candidate-clue-is
              ['()
@@ -816,7 +860,6 @@ solver to keep the logic simpler. |#
                 (clue-tiles-set!/mega candidate-clue-i full-mi 'full
                                       #:contradiction-reason "user tile borders clue that cannot claim it"))]
              [_
-              ;; TODO: Intersect possible placements a la the single-line solver.
               (define-values [any-single? any-mega-2? any-other?]
                 (for/fold ([any-single? #f]
                            [any-mega-2? #f]
@@ -979,7 +1022,13 @@ solver to keep the logic simpler. |#
                                  #(#(full empty empty full  empty full  empty empty cross cross)
                                    #(full empty empty empty empty empty empty empty cross empty)))
                 #(#(full empty empty full  cross full cross empty cross cross)
-                  #(full empty empty empty cross full cross empty cross empty))))
+                  #(full empty empty empty cross full cross empty cross empty)))
+
+  (check-equal? (solve-line/mega '(#[(1) (1)] 4)
+                                 #(#(empty empty full  empty empty empty cross)
+                                   #(empty empty empty full  full  empty empty)))
+                #(#(empty cross full  empty empty empty cross)
+                  #(empty empty empty full  full  empty empty))))
 
 ;; -----------------------------------------------------------------------------
 
