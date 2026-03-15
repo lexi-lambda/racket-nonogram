@@ -31,6 +31,7 @@
          line-clue-analysis?
          axis-clue-analysis?
          (struct-out board-analysis)
+         board-analysis-solved?
 
          (struct-out solver-result)
          solver-result/c
@@ -212,30 +213,40 @@
                               "puzzle" solved-pz))
 
      (define solved-board (puzzle-board solved-pz))
-     (define candidate-lines
+     (define (build-candidate-lines mega-rows mega-columns)
+       (define (overlapping-index? mega-lines i)
+         (or (set-member? mega-lines i)
+             (set-member? mega-lines (sub1 i))
+             (set-member? mega-lines (add1 i))))
        (set-union
-        (for/set ([i (in-range (sub1 (board-height solved-board)))])
+        (for/set ([i (in-range (sub1 (board-height solved-board)))]
+                  #:unless (overlapping-index? mega-rows i))
           (cons 'row i))
-        (for/set ([i (in-range (sub1 (board-width solved-board)))])
+        (for/set ([i (in-range (sub1 (board-width solved-board)))]
+                  #:unless (overlapping-index? mega-columns i))
           (cons 'column i))))
 
-     (let loop ([candidate-lines candidate-lines]
+     (let loop ([candidate-lines (build-candidate-lines (seteqv) (seteqv))]
                 [mega-rows (seteqv)]
                 [mega-columns (seteqv)]
-                [clues (puzzle-clues pz)])
+                [clues (puzzle-clues pz)]
+                [any-replaced? #f])
        (cond
          [(set-empty? candidate-lines)
-          (struct-copy puzzle pz [clues clues])]
+          (if any-replaced?
+              ;; If we did any clue replacements, do another pass before bailing
+              ;; out in case adding mega lines somehow made the puzzle easier.
+              (loop (build-candidate-lines mega-rows mega-columns)
+                    mega-rows
+                    mega-columns
+                    clues
+                    #f)
+              (struct-copy puzzle pz [clues clues]))]
          [else
           (define candidate-line (random-ref candidate-lines))
           (match-define (cons candidate-axis candidate-i) candidate-line)
 
-          (define candidate-lines*
-            (~> candidate-lines
-                (set-remove candidate-line)
-                (set-remove (cons candidate-axis (sub1 candidate-i)))
-                (set-remove (cons candidate-axis (add1 candidate-i)))))
-
+          (define candidate-lines* (set-remove candidate-lines candidate-line))
           (define-values [mega-rows* mega-columns*]
             (match candidate-axis
               ['row    (values (set-add mega-rows candidate-i) mega-columns)]
@@ -246,11 +257,17 @@
                                        #:mega-columns mega-columns*
                                        #:fail #f)
             [#f
-             (loop candidate-lines* mega-rows mega-columns clues)]
+             (loop candidate-lines* mega-rows mega-columns clues any-replaced?)]
             [pz*
              (match (solve-puzzle pz*)
                ['error (fail-contradiction pz*)]
                [(solver-result _ solved?)
                 (if solved?
-                    (loop candidate-lines* mega-rows* mega-columns* (puzzle-clues pz*))
-                    (loop candidate-lines* mega-rows mega-columns clues))])])]))]))
+                    (loop (~> candidate-lines*
+                              (set-remove (cons candidate-axis (sub1 candidate-i)))
+                              (set-remove (cons candidate-axis (add1 candidate-i))))
+                          mega-rows*
+                          mega-columns*
+                          (puzzle-clues pz*)
+                          #t)
+                    (loop candidate-lines* mega-rows mega-columns clues any-replaced?))])])]))]))

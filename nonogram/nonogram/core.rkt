@@ -1002,8 +1002,8 @@
 ;; logic used by the JS on the page to decode the solution.
 (define (parse-nonograms.org-solution str)
   (define d (~> (string->jsexpr str)
-                  (map list->array _)
-                  list->array))
+                (map list->array _)
+                list->array))
   (define (D i)
     (define d* (array-ref d i))
     (λ (j) (array-ref d* j)))
