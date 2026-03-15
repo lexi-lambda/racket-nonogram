@@ -3,7 +3,10 @@
 (require racket/contract
          racket/list
          racket/match
+         racket/random
+         racket/set
          threading
+         toolbox/who
          "core.rkt"
          "geometry.rkt"
          "lib/array.rkt"
@@ -29,12 +32,18 @@
          axis-clue-analysis?
          (struct-out board-analysis)
 
+         (struct-out solver-result)
+         solver-result/c
+
          (contract-out
           [analyze-puzzle (-> puzzle? board-analysis?)]
           [reanalyze-lines-at (-> puzzle? board-analysis? integer-point? board-analysis?)]
 
-          [solve-puzzle-axis (-> puzzle? axis? (or/c puzzle? 'error))]
-          [solve-puzzle (-> puzzle? (or/c puzzle? 'error))]))
+          [solve-puzzle-axis (-> puzzle? axis? (solver-result/c puzzle?))]
+          [solve-puzzle (-> puzzle? (solver-result/c puzzle?))]
+
+          [demegaify-puzzle (-> puzzle? puzzle?)]
+          [megaify-puzzle (-> puzzle? puzzle?)]))
 
 ;; -----------------------------------------------------------------------------
 
@@ -93,39 +102,46 @@
 
 ;; -----------------------------------------------------------------------------
 
-;; solve-puzzle-axis : puzzle? axis? -> (or/c puzzle? 'error)
+;; solve-puzzle-axis : puzzle? axis? -> (solver-result/c puzzle?)
 (define (solve-puzzle-axis pz axis)
   (let/ec bail
-    (define (bail-on-error v)
-      (match v
-        ['error (bail 'error)]
-        [_ v]))
-
     (define lcs+ls (puzzle-axis-clues+lines pz axis))
-    (define new-board
-      (~> (for/list ([lc+l (in-array lcs+ls)])
-            (match lc+l
-              [(cons (line-clues 'single clue-line) tile-line)
-               (list (bail-on-error (solve-line clue-line tile-line)))]
-              [(cons (line-clues 'mega clue-line) mega-tile-line)
-               (array->list (bail-on-error (solve-line/mega clue-line mega-tile-line)))]))
-          append*
-          list->array
-          (lines->board axis)))
-    (struct-copy puzzle pz [board new-board])))
+    (define-values [new-lines solved?]
+      (for/fold ([lines '()]
+                 [solved? #t])
+                ([lc+l (in-array lcs+ls)])
+        (match lc+l
+          [(cons (line-clues 'single clue-line) tile-line)
+           (match (solve-line clue-line tile-line)
+             ['error (bail 'error)]
+             [(solver-result tile-line line-solved?)
+              (values (cons tile-line lines)
+                      (and solved? line-solved?))])]
+          [(cons (line-clues 'mega clue-line) mega-tile-line)
+           (match (solve-line/mega clue-line mega-tile-line)
+             ['error (bail 'error)]
+             [(solver-result (array tile-line-0 tile-line-1) line-solved?)
+              (values (list* tile-line-1 tile-line-0 lines)
+                      (and solved? line-solved?))])])))
+    (solver-result
+     (struct-copy puzzle pz
+       [board (lines->board (list->array (reverse new-lines)) axis)])
+     solved?)))
 
-;; solve-puzzle : puzzle? -> (or/c puzzle? 'error)
+;; solve-puzzle : puzzle? -> (solver-result/c puzzle?)
 (define (solve-puzzle pz)
   (let loop ([old-pz pz])
     (match (solve-puzzle-axis old-pz 'row)
       ['error 'error]
-      [new-pz
-       (match (solve-puzzle-axis new-pz 'column)
-         ['error 'error]
-         [new-pz
-          (if (equal? old-pz new-pz)
-              old-pz
-              (loop new-pz))])])))
+      [(and result (solver-result new-pz solved?))
+       (if solved?
+           result
+           (match (solve-puzzle-axis new-pz 'column)
+             ['error 'error]
+             [(and result (solver-result new-pz solved?))
+              (if (or solved? (equal? old-pz new-pz))
+                  result
+                  (loop new-pz))]))])))
 
 (module+ test
   (define-values [solved unsolved contradictions exns]
@@ -134,13 +150,11 @@
               ([puzzle-entry (in-list all-puzzles)])
       (match-define (cons name pz) puzzle-entry)
       (match (with-handlers ([exn:fail? values])
-               (match (solve-puzzle pz)
-                 ['error 'error]
-                 [solved-pz (analyze-puzzle solved-pz)]))
-        [(? board-analysis? analysis)
+               (solve-puzzle pz))
+        [(solver-result _ solved?)
          (test-log! #t)
          (cond
-           [(board-analysis-solved? analysis)
+           [solved?
             (values (add1 solved) unsolved contradictions exns)]
            [else
             (printf "~v => 'pending\n" name)
@@ -168,3 +182,75 @@
           unsolved
           (length contradictions)
           (length exns)))
+
+;; -----------------------------------------------------------------------------
+
+;; demegaify-puzzle : puzzle? -> puzzle?
+(define/who (demegaify-puzzle pz)
+  (match (solve-puzzle pz)
+    ['error
+     (raise-arguments-error who "solving puzzle resulted in contradiction"
+                            "puzzle" pz)]
+    [(solver-result solved-pz solved?)
+     (unless solved?
+       (raise-arguments-error who "could not solve puzzle"
+                              "puzzle" solved-pz))
+     (struct-copy puzzle pz
+       [clues (solved-board->clues (puzzle-board solved-pz))])]))
+
+;; megaify-puzzle : puzzle? -> puzzle?
+(define/who (megaify-puzzle pz)
+  (define (fail-contradiction pz)
+    (raise-arguments-error who "solving puzzle resulted in contradiction"
+                           "puzzle" pz))
+
+  (match (solve-puzzle pz)
+    ['error (fail-contradiction pz)]
+    [(solver-result solved-pz solved?)
+     (unless solved?
+       (raise-arguments-error who "could not solve puzzle"
+                              "puzzle" solved-pz))
+
+     (define solved-board (puzzle-board solved-pz))
+     (define candidate-lines
+       (set-union
+        (for/set ([i (in-range (sub1 (board-height solved-board)))])
+          (cons 'row i))
+        (for/set ([i (in-range (sub1 (board-width solved-board)))])
+          (cons 'column i))))
+
+     (let loop ([candidate-lines candidate-lines]
+                [mega-rows (seteqv)]
+                [mega-columns (seteqv)]
+                [clues (puzzle-clues pz)])
+       (cond
+         [(set-empty? candidate-lines)
+          (struct-copy puzzle pz [clues clues])]
+         [else
+          (define candidate-line (random-ref candidate-lines))
+          (match-define (cons candidate-axis candidate-i) candidate-line)
+
+          (define candidate-lines*
+            (~> candidate-lines
+                (set-remove candidate-line)
+                (set-remove (cons candidate-axis (sub1 candidate-i)))
+                (set-remove (cons candidate-axis (add1 candidate-i)))))
+
+          (define-values [mega-rows* mega-columns*]
+            (match candidate-axis
+              ['row    (values (set-add mega-rows candidate-i) mega-columns)]
+              ['column (values mega-rows (set-add mega-columns candidate-i))]))
+
+          (match (solved-board->puzzle solved-board
+                                       #:mega-rows mega-rows*
+                                       #:mega-columns mega-columns*
+                                       #:fail #f)
+            [#f
+             (loop candidate-lines* mega-rows mega-columns clues)]
+            [pz*
+             (match (solve-puzzle pz*)
+               ['error (fail-contradiction pz*)]
+               [(solver-result _ solved?)
+                (if solved?
+                    (loop candidate-lines* mega-rows* mega-columns* (puzzle-clues pz*))
+                    (loop candidate-lines* mega-rows mega-columns clues))])])]))]))

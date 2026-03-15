@@ -14,6 +14,10 @@
   (require rackunit))
 
 (provide (maybe-contract-out
+          (struct solver-result ([value any/c]
+                                 [solved? boolean?]))
+          [solver-result/c (-> contract? contract?)]
+
           [clue-analysis? flat-contract?]
           [single-line-analysis? flat-contract?]
           [mega-line-analysis? flat-contract?]
@@ -131,6 +135,8 @@
           [hole-size+end/mega (-> mega-tiles/c mega-index? (values natural? natural?))]
           [hole-end/mega (-> mega-tiles/c mega-index? natural?)]
 
+          [solved-mega-line->clues (->* [mega-tile-line?] [#:fail failure-result/c] any)]
+
           [line-affinity? flat-contract?]
           [earliest-reachable/mega
            (-> mega-tiles/c line-affinity? natural? natural? (array/c natural? natural?))]
@@ -171,6 +177,12 @@
   (if strict-contracts? (vectorof tile? #:immutable #f) mutable-vector?))
 
 ;; -----------------------------------------------------------------------------
+
+(struct solver-result (value solved?) #:transparent)
+
+(define (solver-result/c line-ctc)
+  (or/c (struct/c solver-result line-ctc boolean?)
+        'error))
 
 (define clue-analysis? (or/c 'done 'pending))
 
@@ -627,6 +639,54 @@
 
 (define (hole-end/mega tiles start-mi)
   (connected-region-end/mega tiles start-mi tile-hole?))
+
+;; -----------------------------------------------------------------------------
+
+(define not-given (gensym 'not-given))
+
+;; solved-mega-line->clues : mega-tile-line? -> (or/c line-clues? any)
+(define/who (solved-mega-line->clues tiles #:fail [fail not-given])
+  (define (maybe-finish-singles clues)
+    (match clues
+      [(cons (array clues-0 clues-1) clues)
+       (cons (array (reverse clues-0) (reverse clues-1)) clues)]
+      [_ clues]))
+
+  (define-values [clues any-mega?]
+    (let loop ([mi 0]
+               [clues '()]
+               [any-mega? #f])
+      (match (find-next/mega tiles mi tile-full?)
+        [#f
+         (values (reverse (maybe-finish-singles clues))
+                 any-mega?)]
+        [start-mi
+         (define-values [size end-mi]
+           (connected-region-size+end/mega tiles start-mi tile-full?))
+         (cond
+           [(connected-region-spans-both-lines? start-mi end-mi size)
+            (loop end-mi (cons size (maybe-finish-singles clues)) #t)]
+           [else
+            (define-values [clues-0 clues-1 clues*]
+              (match clues
+                [(cons (array clues-0 clues-1) clues*)
+                 (values clues-0 clues-1 clues*)]
+                [_
+                 (values '() '() clues)]))
+            (loop end-mi
+                  (cons (match (mega-index-line start-mi)
+                          [0 (array (cons size clues-0) clues-1)]
+                          [1 (array clues-0 (cons size clues-1))])
+                        clues*)
+                  any-mega?)])])))
+  (cond
+    [any-mega?
+     (line-clues 'mega clues)]
+    [(eq? fail not-given)
+     (raise-arguments-error who "line would contain no mega clues"
+                            "tiles" tiles)]
+    [(procedure? fail) (fail)]
+    [else fail]))
 
 ;; -----------------------------------------------------------------------------
 

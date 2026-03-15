@@ -14,11 +14,11 @@
 
 (provide (maybe-contract-out
           [analyze-line (-> single-line-clues? tile-line? line-clue-analysis?)]
-          [solve-line (-> single-line-clues? tile-line? (or/c tile-line? 'error))]))
+          [solve-line (-> single-line-clues? tile-line? (solver-result/c tile-line?))]))
 
 ;; -----------------------------------------------------------------------------
 
-(struct line-solution (board-tiles clue-tiless) #:transparent)
+(struct line-solution (board-tiles clue-tiless clue-tiles-left) #:transparent)
 
 ;; do-solve-line : single-line-clues? tile-line? -> (or/c line-solution? 'error)
 (define (do-solve-line clues-lst user-tiles)
@@ -44,7 +44,18 @@
                  ([i (in-range num-clues)])
         (make-empty-tiles)))
 
+    ;; Tracks the number of tiles that still need to be placed (or assigned) for
+    ;; each clue.
+    (define clue-tiles-left
+      (for/vector #:length num-clues
+                  ([clue (in-array clues)])
+        clue))
+
     ;; -------------------------------------------------------------------------
+
+    ;; clue-tiles-left : natural? -> boolean?
+    (define (clue-solved? clue-i)
+      (zero? (vector-ref clue-tiles-left clue-i)))
 
     (define (board-set! i val
                         #:contradiction-reason [reason (current-contradiction-reason)])
@@ -63,16 +74,31 @@
     (define (clue-tiles-set! clue-i i val
                              #:contradiction-reason [reason (current-contradiction-reason)])
       (define clue-tiles (array-ref clue-tiless clue-i))
-      (tiles-set!/track clue-tiles i val #:contradiction-reason reason)
+      (unless (eq? (vector-ref clue-tiles i) val)
+        (tiles-set!/track clue-tiles i val #:contradiction-reason reason)
 
-      ; propagate filled tiles to board and cross other clues
-      (when (tile-full? val)
-        (vector-set! unassigned-user-tiles i 'empty)
-        (board-set! i 'full)
-        (for ([other-i (in-range num-clues)]
-              #:unless (equal? clue-i other-i))
-          (clue-tiles-set! other-i i 'cross
-                           #:contradiction-reason "tile claimed by multiple clues"))))
+        (define (finish-solved-clue!)
+          (for ([i (in-range num-tiles)]
+                #:when (tile-empty? (vector-ref clue-tiles i)))
+            (tiles-set!/track clue-tiles i 'cross))
+          (propagate-information-to-neighbors clue-i))
+
+        ; propagate filled tiles to board and cross other clues
+        (when (tile-full? val)
+          (define tiles-left (sub1 (vector-ref clue-tiles-left clue-i)))
+          (cond
+            [(= tiles-left 0)
+             (finish-solved-clue!)]
+            [(< tiles-left 0)
+             (raise-contradiction "too many tiles filled for clue")])
+          (vector-set! clue-tiles-left clue-i tiles-left)
+
+          (vector-set! unassigned-user-tiles i 'empty)
+          (board-set! i 'full)
+          (for ([other-i (in-range num-clues)]
+                #:unless (equal? clue-i other-i))
+            (clue-tiles-set! other-i i 'cross
+                             #:contradiction-reason "tile claimed by multiple clues")))))
 
     (define (clue-tiles-fill! clue-i val [start-i 0] [end-i num-tiles]
                               #:contradiction-reason [contradiction-reason (current-contradiction-reason)])
@@ -142,19 +168,21 @@
                                            earliest-i)))]))]
         [else #f]))
 
-    ;; Searches for the first clue after `start-clue-i` with a valid placement
-    ;; covering the span [start-i, clue-i). If found, returns a pair of two
-    ;; values: the clue’s index and the index of the first tile in the found
-    ;; placement. If not found, returns #f.
+    ;; Searches for the first unsolved clue after `start-clue-i` with a valid
+    ;; placement covering the span [start-i, clue-i). If found, returns a pair
+    ;; of two values: the clue’s index and the index of the first tile in the
+    ;; found placement. If not found, returns #f.
     (define (find-earliest-clue-with-placement-covering-span start-clue-i start-i end-i #:placement which-placement)
-      (for/or ([clue-i (in-range start-clue-i num-clues)])
+      (for/or ([clue-i (in-range start-clue-i num-clues)]
+               #:unless (clue-solved? clue-i))
         (define placement-i (find-placement-covering-span which-placement clue-i start-i end-i))
         (and placement-i (cons clue-i placement-i))))
 
     ;; Like `find-earliest-clue-with-placement-covering-tile`, but for the latest
     ;; clue instead of the earliest.
     (define (find-latest-clue-with-placement-covering-span end-clue-i start-i end-i #:placement which-placement)
-      (for/or ([clue-i (in-inclusive-range (sub1 end-clue-i) 0 -1)])
+      (for/or ([clue-i (in-inclusive-range (sub1 end-clue-i) 0 -1)]
+               #:unless (clue-solved? clue-i))
         (define placement-i (find-placement-covering-span which-placement clue-i start-i end-i))
         (and placement-i (cons clue-i placement-i))))
 
@@ -390,8 +418,10 @@
     (define (gain-information-to-fixed-point)
       (let go-again ()
         (for ([i (in-range num-clues)])
-          (gain-information-from-self* i)
-          (propagate-information-to-neighbors i))
+          (unless (clue-solved? i)
+            (gain-information-from-self* i)
+            (unless (clue-solved? i)
+              (propagate-information-to-neighbors i))))
         (propagate-information-from-user)
         (when (current-gained-information?)
           (current-gained-information? #f)
@@ -401,35 +431,38 @@
 
     (with-handlers* ([exn:contradiction? (λ (exn) 'error)])
       (gain-information-to-fixed-point)
-      (line-solution board-tiles clue-tiless))))
+      (line-solution board-tiles clue-tiless clue-tiles-left))))
 
 ;; -------------------------------------------------------------------------
 
-;; solve-line : single-line-clues? tile-line? -> (or/c tile-line? 'error)
+;; solve-line : single-line-clues? tile-line? -> (solver-result/c tile-line?)
 (define (solve-line clues tiles)
   (match (do-solve-line clues tiles)
     ['error 'error]
-    [(line-solution board-tiles clue-tiless)
+    [(line-solution board-tiles clue-tiless clue-tiles-left)
      (define num-tiles (vector-length board-tiles))
-     (for/array #:length num-tiles
-                ([i (in-range num-tiles)])
-       (match (vector-ref board-tiles i)
-         ['empty
-          (if (for/and ([clue-tiles (in-array clue-tiless)])
-                (eq? (vector-ref clue-tiles i) 'cross))
-              'cross
-              'empty)]
-         [tile tile]))]))
+     (solver-result
+      (for/array #:length num-tiles
+                 ([i (in-range num-tiles)])
+        (match (vector-ref board-tiles i)
+          ['empty
+           (if (for/and ([clue-tiles (in-array clue-tiless)])
+                 (eq? (vector-ref clue-tiles i) 'cross))
+               'cross
+               'empty)]
+          [tile tile]))
+      (for/and ([tiles-left (in-vector clue-tiles-left)])
+        (zero? tiles-left)))]))
 
 (module+ test
   (check-equal? (solve-line '(1 2 1) #(empty empty empty empty empty empty))
-                #(full cross full full cross full))
+                (solver-result #(full cross full full cross full) #t))
   (check-equal? (solve-line '(1 3) #(empty empty full empty full empty empty))
-                #(empty cross full empty full empty empty))
+                (solver-result #(empty cross full empty full empty empty) #f))
   (check-equal? (solve-line '(3 1) #(empty empty full empty full empty empty))
-                #(empty empty full empty full cross empty))
+                (solver-result #(empty empty full empty full cross empty) #f))
   (check-equal? (solve-line '(4 1) #(empty empty empty full full empty full))
-                #(cross full full full full cross full)))
+                (solver-result #(cross full full full full cross full) #t)))
 
 ;; -------------------------------------------------------------------------
 
@@ -484,7 +517,7 @@
 
   (match (do-solve-line clues user-tiles)
     ['error 'error]
-    [(line-solution _ clue-tiless)
+    [(line-solution _ clue-tiless _)
      (for/list ([clue-tiles (in-array clue-tiless)])
        (extract-analysis clue-tiles))]))
 

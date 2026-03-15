@@ -28,6 +28,7 @@
                         [output-scale real?]
                         [backing-scale real?])
 
+            [get-puzzle (->m puzzle?)]
             [get-output-scale (->m real?)]
             [get-backing-scale (->m real?)]
 
@@ -461,6 +462,8 @@
         (match-define (point x y) (tf* tf:tile-to-puzzle tile-location))
         (pin-over p x y (scale (tile-cursor client-ids) output-scale))))
 
+    (define/public (get-puzzle)
+      puzzle)
     (define/public (get-output-scale)
       output-scale)
     (define/public (get-backing-scale)

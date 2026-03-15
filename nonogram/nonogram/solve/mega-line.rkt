@@ -16,13 +16,14 @@
 (provide (maybe-contract-out
           [analyze-line/mega
            (-> mega-line-clues? mega-tile-line? line-clue-analysis?)]
-          [solve-line/mega (-> mega-line-clues? mega-tile-line? (or/c mega-tile-line? 'error))]))
+          [solve-line/mega (-> mega-line-clues? mega-tile-line? (solver-result/c mega-tile-line?))]))
 
 ;; -----------------------------------------------------------------------------
 
 (struct mega-line-solution
   (board-tiles
    clue-tiless
+   clue-tiles-left
    line-clue-indexes)
   #:transparent)
 
@@ -929,107 +930,133 @@ solver to keep the logic simpler. |#
 
     (with-handlers* ([exn:contradiction? (λ (exn) 'error)])
       (gain-information-to-fixed-point)
-      (mega-line-solution board-tiles clue-tiless line-clue-indexes))))
+      (mega-line-solution board-tiles clue-tiless clue-tiles-left line-clue-indexes))))
 
 ;; -------------------------------------------------------------------------
 
-;; solve-line/mega : mega-line-clues? mega-tile-line? -> (or/c tile-line? 'error)
+;; solve-line/mega : mega-line-clues? mega-tile-line? -> (solver-result/c mega-tile-line?)
 (define (solve-line/mega clues tiles)
   (match (do-solve-line clues tiles)
     ['error 'error]
-    [(mega-line-solution board-tiles clue-tiless line-clue-indexes)
+    [(mega-line-solution board-tiles clue-tiless clue-tiles-left line-clue-indexes)
      (define num-tiles (mega-tiles-length board-tiles))
      (define clue-tiles-ref/mega (make-clue-tiles-ref/mega clue-tiless))
-     (for/array #:length 2 ([line-i (in-range 2)])
-       (for/array #:length num-tiles ([i (in-range num-tiles)])
-         (define mi (mega-index line-i i))
-         (match (tiles-ref/mega board-tiles mi)
-           ['empty
-            (if (for/and ([clue-i (in-array (line-clue-indexes line-i))])
-                  (eq? (clue-tiles-ref/mega clue-i mi) 'cross))
-                'cross
-                'empty)]
-           [tile tile])))]))
+     (solver-result
+      (for/array #:length 2 ([line-i (in-range 2)])
+        (for/array #:length num-tiles ([i (in-range num-tiles)])
+          (define mi (mega-index line-i i))
+          (match (tiles-ref/mega board-tiles mi)
+            ['empty
+             (if (for/and ([clue-i (in-array (line-clue-indexes line-i))])
+                   (eq? (clue-tiles-ref/mega clue-i mi) 'cross))
+                 'cross
+                 'empty)]
+            [tile tile])))
+      (for/and ([chunk (in-vector clue-tiles-left)])
+        (match chunk
+          [(? array? chunks)
+           (for*/and ([chunk (in-array chunks)]
+                      [tiles-left (in-vector chunk)])
+             (zero? tiles-left))]
+          [tiles-left
+           (zero? tiles-left)])))]))
 
 (module+ test
   (check-equal? (solve-line/mega '(2) #(#(cross full empty empty)
                                         #(empty full cross empty)))
-                #(#(cross full cross cross)
-                  #(cross full cross cross)))
+                (solver-result #(#(cross full cross cross)
+                                 #(cross full cross cross))
+                               #t))
   (check-equal? (solve-line/mega '(4) #(#(empty empty)
                                         #(empty empty)))
-                #(#(full full)
-                  #(full full)))
+                (solver-result #(#(full full)
+                                 #(full full))
+                               #t))
   (check-equal? (solve-line/mega '(2 2 2) #(#(empty empty empty empty empty)
                                             #(empty empty empty empty empty)))
-                #(#(full cross full cross full)
-                  #(full cross full cross full)))
+                (solver-result #(#(full cross full cross full)
+                                 #(full cross full cross full))
+                               #t))
   (check-equal? (solve-line/mega '(5) #(#(cross empty empty)
                                         #(empty empty empty)))
-                #(#(cross full full)
-                  #(full  full full)))
+                (solver-result #(#(cross full full)
+                                 #(full  full full))
+                               #t))
   (check-equal? (solve-line/mega '(3) #(#(cross empty empty empty)
                                         #(full  empty empty empty)))
-                #(#(cross full cross cross)
-                  #(full  full cross cross)))
+                (solver-result #(#(cross full cross cross)
+                                 #(full  full cross cross))
+                               #t))
   (check-equal? (solve-line/mega '(3) #(#(cross cross empty empty)
                                         #(cross full  empty empty)))
-                #(#(cross cross full cross)
-                  #(cross full  full cross)))
+                (solver-result #(#(cross cross full cross)
+                                 #(cross full  full cross))
+                               #t))
   (check-equal? (solve-line/mega '(2 3) #(#(full cross cross empty empty)
                                           #(full cross full  empty empty)))
-                #(#(full cross cross full cross)
-                  #(full cross full  full cross)))
+                (solver-result #(#(full cross cross full cross)
+                                 #(full cross full  full cross))
+                               #t))
   (check-equal? (solve-line/mega '(4) #(#(cross empty empty)
                                         #(full  empty empty)))
-                #(#(cross empty empty)
-                  #(full  full  empty)))
+                (solver-result #(#(cross empty empty)
+                                 #(full  full  empty))
+                               #f))
 
   (check-equal? (solve-line/mega '(3) #(#(full full)
                                         #(full empty)))
-                #(#(full full)
-                  #(full cross)))
+                (solver-result #(#(full full)
+                                 #(full cross))
+                               #t))
   (check-equal? (solve-line/mega '(2 3) #(#(empty empty empty full full)
                                           #(empty empty empty full empty)))
-                #(#(empty empty cross full full)
-                  #(empty empty cross full cross)))
+                (solver-result #(#(empty empty cross full full)
+                                 #(empty empty cross full cross))
+                               #f))
   (check-equal? (solve-line/mega '(3 2) #(#(full empty empty empty empty)
                                           #(full full  empty empty empty)))
-                #(#(full cross cross empty empty)
-                  #(full full  cross empty empty)))
+                (solver-result #(#(full cross cross empty empty)
+                                 #(full full  cross empty empty))
+                               #f))
   (check-equal? (solve-line/mega '(3 2) #(#(full full  empty empty empty)
                                           #(full empty empty empty empty)))
-                #(#(full full  cross empty empty)
-                  #(full cross cross empty empty)))
+                (solver-result #(#(full full  cross empty empty)
+                                 #(full cross cross empty empty))
+                               #f))
 
   (check-equal? (solve-line/mega '(3) #(#(full  empty cross)
                                         #(empty empty empty)))
-                #(#(full  empty cross)
-                  #(empty empty cross)))
+                (solver-result #(#(full  empty cross)
+                                 #(empty empty cross))
+                               #f))
 
   (check-equal? (solve-line/mega '(3 4 #[(1 1) ()])
                                  #(#(empty empty empty empty empty empty empty empty)
                                    #(full  cross full  full  full  cross cross cross)))
-                #(#(full full  cross full cross full  cross full)
-                  #(full cross full  full full  cross cross cross)))
+                (solver-result #(#(full full  cross full cross full  cross full)
+                                 #(full cross full  full full  cross cross cross))
+                               #t))
 
   (check-equal? (solve-line/mega '(#[(2 1) (2)] 4)
                                  #(#(empty empty empty full  empty empty empty empty empty empty)
                                    #(empty empty empty empty empty full  empty empty empty cross)))
-                #(#(empty empty empty full  empty empty empty empty empty empty)
-                  #(empty empty empty cross empty full  empty empty empty cross)))
+                (solver-result #(#(empty empty empty full  empty empty empty empty empty empty)
+                                 #(empty empty empty cross empty full  empty empty empty cross))
+                               #f))
 
   (check-equal? (solve-line/mega '(5 2 2 #[() (1)])
                                  #(#(full empty empty full  empty full  empty empty cross cross)
                                    #(full empty empty empty empty empty empty empty cross empty)))
-                #(#(full empty empty full  cross full cross empty cross cross)
-                  #(full empty empty empty cross full cross empty cross empty)))
+                (solver-result #(#(full empty empty full  cross full cross empty cross cross)
+                                 #(full empty empty empty cross full cross empty cross empty))
+                               #f))
 
   (check-equal? (solve-line/mega '(#[(1) (1)] 4)
                                  #(#(empty empty full  empty empty empty cross)
                                    #(empty empty empty full  full  empty empty)))
-                #(#(empty cross full  empty empty empty cross)
-                  #(empty empty empty full  full  empty empty))))
+                (solver-result #(#(empty cross full  empty empty empty cross)
+                                 #(empty empty empty full  full  empty empty))
+                               #f)))
 
 ;; -----------------------------------------------------------------------------
 
@@ -1109,7 +1136,7 @@ solver to keep the logic simpler. |#
 (define (analyze-line/mega/solve clues user-tiles)
   (match (do-solve-line clues user-tiles)
     ['error 'error]
-    [(mega-line-solution _ clue-tiless _)
+    [(mega-line-solution _ clue-tiless _ _)
      ;; Like `extract-analysis` for single line clues, but also checks that all of
      ;; the opposite tiles are crossed out.
      (define (extract-analysis/single clue-i)

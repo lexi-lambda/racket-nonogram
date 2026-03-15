@@ -27,10 +27,15 @@ Alternatively, run `racket -yl- nonogram/main --help` to see the full list of op
 * Clicking and dragging is supported to fill/cross/mark several tiles at once.
 * **F12** completely clears the current puzzle.
 
-Internally, racket-nonogram includes a line solver to automatically cross off completed clues. The following keybindings can be used to instruct the solver to try to actually solve the puzzle (which is obviously cheating, though it can be useful when designing/testing puzzles):
+Internally, racket-nonogram includes a line solver to automatically cross off completed clues. The following keybindings can be used to invoke the solver to attempt to actually solve the puzzle (which is obviously cheating, though it can be useful when designing/testing puzzles):
 
 * **F1** runs the line solver on all rows.
 * **F2** runs the line solver on all columns.
 * **F3** runs the line solver repeatedly on both rows and columns until it reaches a fixed point.
 
 Not all puzzles can be fully solved by the line solver. Some puzzles require utilizing information from both row and column clues simultaneously, and the solver currently does not attempt to guess. (Also, the mega line solver is not currently exhaustive, though it does an okay job on most puzzles.)
+
+If the solver is able to solve the current puzzle, the following keybindings can be used to convert “mega nonogram” puzzles to standard nonograms or vice versa:
+
+* **F9** converts the current puzzle to a standard nonogram, removing all mega clues.
+* **F10** attempts to convert the current puzzle to a mega nonogram by randomly converting pairs of standard lines to mega lines. Pressing **F10** again will re-randomize the selected lines.

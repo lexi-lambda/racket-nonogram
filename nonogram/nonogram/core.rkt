@@ -2,16 +2,20 @@
 
 (require json
          racket/contract
+         racket/lazy-require
          racket/list
          racket/match
          racket/math
          racket/serialize
+         racket/set
          racket/string
          threading
          toolbox/who
          xml
          "lib/array.rkt"
          "lib/contract.rkt")
+
+(lazy-require ["solve/core.rkt" {solved-mega-line->clues}])
 
 (module+ example
   (provide board-1
@@ -76,12 +80,20 @@
                                 (or/c single-line-clues?
                                       (array/c mega-line-clues? mega-line-offset?)))]
           [solved-line->clues (-> tile-line? line-clues?)]
-          [solved-board->clues (-> board? board-clues?)]
+          [solved-board->clues (->* [board?]
+                                    [#:mega-rows (set/c natural? #:kind 'immutable)
+                                     #:mega-columns (set/c natural? #:kind 'immutable)
+                                     #:fail failure-result/c]
+                                    any)]
 
           (struct puzzle ([board board?]
                           [clues board-clues?]))
           [clues->puzzle (-> board-clues? puzzle?)]
-          [solved-board->puzzle (-> board? puzzle?)]
+          [solved-board->puzzle (->* [board?]
+                                     [#:mega-rows (set/c natural? #:kind 'immutable)
+                                      #:mega-columns (set/c natural? #:kind 'immutable)
+                                      #:fail failure-result/c]
+                                     any)]
           [puzzle-axis-clues+lines
            (-> puzzle? axis? (arrayof (cons/c line-clues? (or/c tile-line? mega-tile-line?))))]
 
@@ -354,14 +366,63 @@
                  #(full cross full full cross cross full full full cross full))
                 (line-clues 'single '(1 2 3 1))))
 
-(define (solved-board->clues b)
-  (define w (board-width b))
-  (define h (board-height b))
-  (board-clues
-   (for/array #:length h ([i (in-range h)])
-     (solved-line->clues (board-row b i)))
-   (for/array #:length w ([i (in-range w)])
-     (solved-line->clues (board-column b i)))))
+(define not-given (gensym 'not-given))
+
+;; solved-board->clues : board?
+;;                       #:mega-rows (set/c natural? #:kind 'immutable)
+;;                       #:mega-columns (set/c natural? #:kind 'immutable)
+;;                       #:fail failure-result/c
+;;                    -> (or/c board-clues? any)
+(define/who (solved-board->clues b
+                                 #:mega-rows [mega-rows (seteqv)]
+                                 #:mega-columns [mega-columns (seteqv)]
+                                 #:fail [fail not-given]
+                                 #:who [who who])
+  (define (do-axis axis mega-lines)
+    (define len (board-axis-length b axis))
+
+    (for ([i (in-immutable-set mega-lines)])
+      (unless (< i (sub1 len))
+        (raise-range-error who "board..." (format "mega ~a " axis) i b 0 (- len 2)))
+      (when (set-member? mega-lines (add1 i))
+        (raise-arguments-error who (format "#:mega-~as argument contains consecutive indexes" axis)
+                               "first index" i
+                               "second index" (add1 i)
+                               "all indexes" mega-lines)))
+
+    (let loop ([i 0]
+               [clues '()])
+      (cond
+        [(= i len)
+         (list->array (reverse clues))]
+        [(set-member? mega-lines i)
+         (match (solved-mega-line->clues (array (board-line b axis i)
+                                                (board-line b axis (add1 i)))
+                                         #:fail #f)
+           [#f i]
+           [line-clues
+            (loop (+ i 2) (cons line-clues clues))])]
+        [else
+         (define line-clues (solved-line->clues (board-line b axis i)))
+         (loop (add1 i) (cons line-clues clues))])))
+
+  (define (do-fail axis i)
+    (cond
+      [(eq? fail not-given)
+       (raise-arguments-error who (format "~a would contain no mega clues" axis)
+                              (format "~a index" axis) i)]
+      [(procedure? fail) (fail)]
+      [else fail]))
+
+  (match (do-axis 'row mega-rows)
+    [(? natural? failed-i)
+     (do-fail 'row failed-i)]
+    [row-clues
+     (match (do-axis 'column mega-columns)
+       [(? natural? failed-i)
+        (do-fail 'column failed-i)]
+       [column-clues
+        (board-clues row-clues column-clues)])]))
 
 (module+ test
   (check-equal? (solved-board->clues
@@ -386,10 +447,24 @@
           clues))
 
 ;; solved-board->puzzle : board? -> puzzle?
-(define (solved-board->puzzle b)
-  (puzzle (board-clear b) (solved-board->clues b)))
+(define/who (solved-board->puzzle b
+                                  #:mega-rows [mega-rows (seteqv)]
+                                  #:mega-columns [mega-columns (seteqv)]
+                                  #:fail [fail not-given])
+  (define clues
+    (solved-board->clues b
+                         #:mega-rows mega-rows
+                         #:mega-columns mega-columns
+                         #:fail (if (eq? fail not-given)
+                                    not-given
+                                    #f)
+                         #:who who))
+  (cond
+    [clues (puzzle (board-clear b) clues)]
+    [(procedure? fail) (fail)]
+    [else fail]))
 
-;; puzzle-axis-tiles+clues
+;; puzzle-axis-clues+lines
 ;;  : puzzle? axis?
 ;; -> (arrayof (cons/c line-clues? (or/c tile-line? mega-tile-line?)))
 (define (puzzle-axis-clues+lines pz axis)

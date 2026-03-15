@@ -171,11 +171,19 @@
     (match event-type
       ['press
        (define old-puzzle (world-puzzle wld))
+
+       (define (extract-result result)
+         (match result
+           ['error old-puzzle]
+           [(solver-result new-puzzle _) new-puzzle]))
+
        (define new-puzzle
          (match key-code
-           ['f1 (solve-puzzle-axis old-puzzle 'row)]
-           ['f2 (solve-puzzle-axis old-puzzle 'column)]
-           ['f3 (solve-puzzle old-puzzle)]
+           ['f1 (extract-result (solve-puzzle-axis old-puzzle 'row))]
+           ['f2 (extract-result (solve-puzzle-axis old-puzzle 'column))]
+           ['f3 (extract-result (solve-puzzle old-puzzle))]
+           ['f9 (demegaify-puzzle old-puzzle)]
+           ['f10 (megaify-puzzle old-puzzle)]
            ['f12
             (struct-copy puzzle old-puzzle
                          [board (board-clear (puzzle-board old-puzzle))])]
@@ -268,7 +276,6 @@
        (define/augment (on-close)
          (send refresh-timer stop)))))
 
-  (define base-size (get-base-puzzle-size (world-puzzle initial-world)))
   (define this-cs (make-client-state this-client-id
                                      initial-world))
 
@@ -378,12 +385,12 @@
      (class canvas%
        (inherit get-client-size
                 get-dc
-                refresh
                 refresh-now)
 
        (define needs-refresh? #t)
        (define mouse-location #f)
 
+       (define base-size #f)
        (define puzzle-renderer #f)
        (define tf:canvas-to-render tf:identity)
 
@@ -424,24 +431,36 @@
          (set! needs-refresh? #t))
 
        (define/private (update-renderer!)
-         (define wld (client-state-world this-cs))
+         (define cs this-cs)
+         (define wld (client-state-world cs))
          (define backing-scale (send (get-dc) get-backing-scale))
-         (define output-scale (calculate-output-scale))
+
+         (define (create-fresh-renderer! output-scale)
+           (set! puzzle-renderer
+                 (new puzzle-renderer%
+                      [puzzle (world-puzzle wld)]
+                      [board-analysis (client-state-board-analysis cs)]
+                      [output-scale output-scale]
+                      [backing-scale backing-scale])))
+
          (cond
            [(or (not puzzle-renderer)
-                (not (= output-scale (send puzzle-renderer get-output-scale)))
-                (not (= backing-scale (send puzzle-renderer get-backing-scale))))
-            (set! puzzle-renderer
-                  (new puzzle-renderer%
-                       [puzzle (world-puzzle wld)]
-                       [board-analysis (client-state-board-analysis this-cs)]
-                       [output-scale output-scale]
-                       [backing-scale backing-scale]))]
+                (not (equal? (puzzle-clues (world-puzzle wld))
+                             (puzzle-clues (send puzzle-renderer get-puzzle)))))
+            (set! base-size (get-base-puzzle-size (world-puzzle wld)))
+            (define output-scale (calculate-output-scale))
+            (create-fresh-renderer! output-scale)]
            [else
-            (send puzzle-renderer update!
-                  (world-puzzle wld)
-                  (client-state-board-analysis this-cs)
-                  (world-cursor-locations wld))]))
+            (define output-scale (calculate-output-scale))
+            (cond
+              [(or (not (= output-scale (send puzzle-renderer get-output-scale)))
+                   (not (= backing-scale (send puzzle-renderer get-backing-scale))))
+               (create-fresh-renderer! output-scale)]
+              [else
+               (send puzzle-renderer update!
+                     (world-puzzle wld)
+                     (client-state-board-analysis cs)
+                     (world-cursor-locations wld))])]))
 
        (define/private (calculate-output-scale)
          (define-values [w h] (get-client-size))
