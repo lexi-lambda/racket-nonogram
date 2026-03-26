@@ -22,6 +22,10 @@
 
           [reverse-pixel-format exact-nonnegative-integer?]
 
+          [make-gl-config (->* [] [#:legacy? any/c
+                                   #:multisample (integer-in 0 256)
+                                   #:sync-swap? any/c]
+                               (is-a?/c gl-config%))]
           [default-gl-config (is-a?/c gl-config%)]
           [current-gl-config (parameter/c (is-a?/c gl-config%))]
 
@@ -59,9 +63,16 @@
       GL_UNSIGNED_INT_8_8_8_8_REV
       GL_UNSIGNED_INT_8_8_8_8))
 
-(define default-gl-config (new gl-config%))
-(send default-gl-config set-legacy? #f)
-(send default-gl-config set-multisample-size 4)
+(define (make-gl-config #:legacy? [legacy? #f]
+                        #:multisample [multisample-size 4]
+                        #:sync-swap? [sync-swap? #f])
+  (define config (new gl-config%))
+  (send config set-legacy? legacy?)
+  (send config set-multisample-size multisample-size)
+  (send config set-sync-swap sync-swap?)
+  config)
+
+(define default-gl-config (make-gl-config))
 
 (define current-gl-config (make-parameter default-gl-config))
 

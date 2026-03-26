@@ -23,6 +23,7 @@
          "solve.rkt")
 
 (provide default-gl-config
+         make-gl-config
          (contract-out
           [puzzle-renderer%
            (class/c

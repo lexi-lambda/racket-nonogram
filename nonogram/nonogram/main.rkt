@@ -45,12 +45,12 @@
    show-fps?)
   #:transparent)
 
-(define (make-client-state client-id wld)
+(define (make-client-state client-id wld #:show-fps? [show-fps? #f])
   (client-state client-id
                 wld
                 (analyze-puzzle (world-puzzle wld))
                 #f
-                #f))
+                show-fps?))
 
 (serializable-struct action () #:transparent)
 (serializable-struct a:set-puzzle action (puzzle) #:transparent)
@@ -273,7 +273,9 @@
 (define (run initial-world
              #:client [this-client-id 0]
              #:serve [listen-port #f]
-             #:upstream [server-conn #f])
+             #:upstream [server-conn #f]
+             #:show-fps? [show-fps? #f]
+             #:fps-limit [fps-limit 60])
   (define frame
     (new
      (class frame%
@@ -281,10 +283,11 @@
                   [width 800]
                   [height 600])
        (define/augment (on-close)
-         (send refresh-timer stop)))))
+         (break-thread refresh-thread)))))
 
   (define this-cs (make-client-state this-client-id
-                                     initial-world))
+                                     initial-world
+                                     #:show-fps? show-fps?))
 
   ;; ---------------------------------------------------------------------------
 
@@ -452,10 +455,29 @@
          (define-values [gl-w gl-h] (get-gl-client-size))
          (send puzzle-renderer set-size! gl-w gl-h)))))
 
-  (define refresh-timer
-    (new timer%
-         [interval (floor (/ 1000 60))]
-         [notify-callback (λ () (send canvas do-refresh))]))
+  (define refresh-thread
+    (thread
+     (λ ()
+       (with-handlers* ([exn:break? void])
+         (cond
+           [fps-limit
+            (define ms-per-frame (/ 1000.0 fps-limit))
+            (let loop ([start-ms (current-inexact-monotonic-milliseconds)])
+              (send canvas do-refresh)
+              (define end-ms (current-inexact-monotonic-milliseconds))
+              (define next-start-ms (+ start-ms ms-per-frame))
+              (define sleep-ms (- next-start-ms end-ms))
+              (cond
+                [(<= sleep-ms 0)
+                 (loop end-ms)]
+                [else
+                 (sleep (/ sleep-ms 1000))
+                 (loop next-start-ms)]))]
+           [else
+            (let loop ()
+              (send canvas do-refresh)
+              (sleep)
+              (loop))])))))
 
   (when server-conn
     (thread (λ () (recv-loop server-conn))))
@@ -499,6 +521,8 @@
   (define log-timings? #f)
   (define what-to-do #f)
   (define listen-port #f)
+  (define show-fps? #f)
+  (define fps-limit 60)
 
   (command-line
    #:once-any
@@ -526,7 +550,13 @@
     (set! listen-port (string->number port))]
    ["--debug-log-timings"
     "Log timings during puzzle analyze and render"
-    (set! log-timings? #t)])
+    (set! log-timings? #t)]
+   ["--debug-no-fps-limit"
+    "Disable the FPS limit"
+    (set! fps-limit #f)]
+   ["--debug-show-fps"
+    "Enable rendering the current FPS by default"
+    (set! show-fps? #t)])
 
   (define log-writer
     (spawn-pretty-log-writer
@@ -544,7 +574,9 @@
     (run pz
          #:client this-client-id
          #:serve listen-port
-         #:upstream server-conn))
+         #:upstream server-conn
+         #:show-fps? show-fps?
+         #:fps-limit fps-limit))
 
   (match what-to-do
     [#f
