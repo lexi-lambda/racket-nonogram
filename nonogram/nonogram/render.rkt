@@ -241,8 +241,8 @@
     (define board-p #f)
 
     (define/private (set-board-dirty!)
-      (set! dirty? #t)
-      (set! board-p #f))
+      (set! board-p #f)
+      (set! dirty? #t))
 
     (define/public (set-puzzle! new-pz)
       (define old-pz pz)
@@ -277,7 +277,8 @@
         (set! dirty? #t)))
 
     (define/public (set-show-fps?! new-show-fps?)
-      (set! show-fps? (and new-show-fps? #t)))
+      (set! show-fps? (and new-show-fps? #t))
+      (set! dirty? #t))
 
     ;; -------------------------------------------------------------------------
     ;; coordinate mapping
