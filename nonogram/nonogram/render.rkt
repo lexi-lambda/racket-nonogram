@@ -311,7 +311,8 @@
       (vr-append (scale fps-p 1.25) frame-ms-p))
 
     (define/public (render!)
-      (when dirty?
+      (when (or dirty? show-fps?)
+        (set! dirty? #f)
         (with-gl-context
          (λ ()
            ;; assemble board and clues
