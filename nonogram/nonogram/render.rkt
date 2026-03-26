@@ -1,516 +1,55 @@
 #lang racket/base
 
-(require pict
+(require opengl
          racket/class
          racket/contract
-         racket/draw
+         racket/flonum
+         racket/format
+         racket/gui/base
          racket/list
          racket/match
          racket/math
+         toolbox/format
          threading
-         toolbox/who
+         (except-in "geometry.rkt" pict-size)
          "core.rkt"
-         "geometry.rkt"
          "lib/array.rkt"
-         "logger.rkt"
+         "lib/atlas.rkt"
+         "lib/gl/core.rkt"
+         "lib/gl/dc.rkt"
+         "lib/gl/pict.rkt"
+         "render/constants.rkt"
+         "render/sprites.rkt"
          "solve.rkt")
 
-(provide TILE-SIZE
+(provide default-gl-config
          (contract-out
-          [line (-> real? real? pict?)]
-          [set-smoothing (->* [pict?] [(or/c 'unsmoothed 'smoothed 'aligned)] pict?)]
-
-          [get-base-puzzle-size (-> puzzle? size?)]
           [puzzle-renderer%
            (class/c
-            (init-field [puzzle puzzle?]
+            (init-field [gl-context (is-a?/c gl-context<%>)]
+                        [puzzle puzzle?]
                         [board-analysis (or/c board-analysis? #f)]
-                        [output-scale real?]
-                        [backing-scale real?])
-
-            [get-puzzle (->m puzzle?)]
-            [get-output-scale (->m real?)]
-            [get-backing-scale (->m real?)]
-
-            [update! (->m puzzle?
-                          (or/c board-analysis? #f)
-                          (hash/c natural? integer-point? #:immutable #t)
-                          void?)]
-            [get-render (->m pict?)]
-            [get-tile-at (->m point? (or/c integer-point? #f))])]))
+                        [show-fps? boolean?])
+            [set-size! (->m exact-positive-integer? exact-positive-integer? void?)]
+            [set-puzzle! (->m puzzle? void?)]
+            [set-board-analysis! (->m (or/c board-analysis? #f) void?)]
+            [set-cursor-locations! (->m (hash/c natural? integer-point? #:immutable #t) void?)]
+            [set-show-fps?! (->m any/c void?)]
+            [get-tile-at (->m point? (or/c integer-point? #f))]
+            [render! (->m void?)])]))
 
 ;; -----------------------------------------------------------------------------
 
-(define (turns x)
-  (* pi 2 x))
-
-(define (line dx dy)
-  (unsafe-dc (λ (dc x y) (send dc draw-line x y (+ x dx) (+ y dy)))
-             dx
-             dy))
-
-(define (set-smoothing p [smoothing 'smoothed])
-  (define draw-p (make-pict-drawer p))
-  (struct-copy
-   pict (unsafe-dc
-         (λ (dc x y)
-           (define old-smoothing (send dc get-smoothing))
-           (send dc set-smoothing smoothing)
-           (draw-p dc x y)
-           (send dc set-smoothing old-smoothing))
-         (pict-width p)
-         (pict-height p)
-         (pict-ascent p)
-         (pict-descent p))
-   [children (list (child p 0 0 1 1 0 0))]))
-
-(define/who (freeze-to p0 bm-box
-                       #:scale [backing-scale 1.0]
-                       #:allow-size-change? [allow-size-change? #f])
-  (define p (scale p0 backing-scale))
-  (define bm-width (max 1 (inexact->exact (ceiling (pict-width p)))))
-  (define bm-height (max 1 (inexact->exact (ceiling (pict-height p)))))
-
-  (define (install-new-bitmap!)
-    (define bm (make-bitmap bm-width bm-height))
-    (set-box! bm-box bm)
-    bm)
-
-  (define bm
-    (match (unbox bm-box)
-      [#f (install-new-bitmap!)]
-      [bm
-       (cond
-         [(and (= (send bm get-width) bm-width)
-               (= (send bm get-height) bm-height))
-          bm]
-         [allow-size-change?
-          (install-new-bitmap!)]
-         [else
-          (raise-arguments-error who "pict to freeze has different size from previously-frozen pict")])]))
-
-  (define dc (new bitmap-dc% [bitmap bm]))
-  (send dc clear)
-  (send dc set-smoothing 'smoothed)
-  (draw-pict p dc 0 0)
-  (struct-copy pict (scale (bitmap bm) (/ backing-scale))
-               [children (list (child p0 0 0 1 1 0 0))]))
-
-;; -----------------------------------------------------------------------------
-
-(define CLUE-SIZE 16)
-(define CLUE-GAP 6)
-(define CLUE-BOARD-GAP 4)
-(define CLUE-PENDING-COLOR (make-color #x30 #x30 #x30))
-(define CLUE-DONE-COLOR "gray")
-(define CLUE-ERROR-COLOR "red")
-(define MEGA-CLUE-SIZE 20)
-(define MEGA-CLUE-GAP 4)
-(define MEGA-CLUE-TWO-PADDING 1)
-(define MEGA-CLUE-MARGIN 2)
-(define MEGA-CLUE-PADDING 3)
-(define MEGA-CLUE-RADIUS 2)
-
-(define TILE-SIZE 20)
-(define TILE-EMPTY-COLOR-1 "white")
-(define TILE-EMPTY-COLOR-2 "white smoke")
-(define TILE-FULL-COLOR "black")
-
-(define TILE-SYMBOL-THICKNESS 2)
-(define TILE-CROSS-COLOR "dark orange")
-(define TILE-MARK-COLOR "dim gray")
-
-(define GRID-MAJOR-INTERVAL 5)
-(define GRID-MAJOR-COLOR (make-color #x48 #x48 #x48))
-(define GRID-MINOR-COLOR (make-color #x80 #x80 #x80))
-(define GRID-LINE-WIDTH 1.5)
-(define GRID-BORDER-WIDTH 2)
-(define GRID-TILE-RADIUS 2)
-
-(define CURSOR-COLORS
-  (array (make-color #x3d #x7b #xe0)
-         (make-color #xe0 #x3d #x3d)
-         (make-color #x3d #xe0 #x58)
-         (make-color #xf0 #xe9 #x30)))
-
-;; -----------------------------------------------------------------------------
-
-(define renderer%
-  (class object%
-    (init-field [backing-scale 1.0])
-
-    (define/public (freeze* p)
-      (~> (set-smoothing p)
-          (freeze #:scale backing-scale)))
-
-    (define/public (freeze-to* p bm-box)
-      (freeze-to p bm-box #:scale backing-scale))
-
-    (define/public (freeze/dc proc #:width width #:height height)
-      (define bm (make-bitmap (max 1 (inexact->exact (ceiling (* width backing-scale))))
-                              (max 1 (inexact->exact (ceiling (* height backing-scale))))))
-      (define dc (make-object bitmap-dc% bm))
-      (send dc set-smoothing 'smoothed)
-      (send dc scale backing-scale backing-scale)
-      (proc dc)
-      (scale (bitmap bm) (/ backing-scale)))
-
-    (super-new)))
-
-;; -----------------------------------------------------------------------------
-;; board
-
-(define (cross-symbol)
-  (~> (cc-superimpose
-       (line (/ TILE-SIZE 2) (/ TILE-SIZE 2))
-       (line (/ TILE-SIZE 2) (/ TILE-SIZE -2)))
-      (colorize TILE-CROSS-COLOR)
-      (linewidth TILE-SYMBOL-THICKNESS _)
-      (inset 1)))
-
-(define (mark-symbol)
-  (~> (rectangle (/ TILE-SIZE 2.5) (/ TILE-SIZE 2.5))
-      (rotate (turns 1/8))
-      (colorize TILE-MARK-COLOR)
-      (linewidth TILE-SYMBOL-THICKNESS _)
-      (inset 1)))
-
-(define tile-cursor
-  (let ()
-    (define (color client-id)
-      (array-ref CURSOR-COLORS (remainder client-id (array-length CURSOR-COLORS))))
-
-    ;; Renders a series of diagonal stripes for use as a clipping region when
-    ;; rendering overlapping cursors.
-    (define (build-hatch-path divisions index)
-      (define p (new dc-path%))
-      (define stripes/2 3)
-      (define stripes (* stripes/2 2))
-      (define stripe-delta (/ 1.0 stripes/2))
-      (define division-delta (/ stripe-delta divisions))
-      (define offset1 (* division-delta index))
-      (define offset2 (* division-delta (add1 index)))
-      (for ([i (in-range stripes/2)])
-        (define d1 (+ (* stripe-delta i) offset1))
-        (define d2 (+ (* stripe-delta i) offset2))
-        (send p move-to 0.0 d1)
-        (send p line-to 0.0 d2)
-        (send p line-to d2 0.0)
-        (send p line-to d1 0.0)
-        (send p close))
-      (for ([i (in-range stripes/2)])
-        (define d1 (+ (* stripe-delta i) offset1))
-        (define d2 (+ (* stripe-delta i) offset2))
-        (send p move-to d1 1.0)
-        (send p line-to d2 1.0)
-        (send p line-to 1.0 d2)
-        (send p line-to 1.0 d1)
-        (send p close))
-      (send p scale
-            (+ TILE-SIZE GRID-BORDER-WIDTH)
-            (+ TILE-SIZE GRID-BORDER-WIDTH))
-      (send p translate
-            (- (/ GRID-BORDER-WIDTH 2))
-            (- (/ GRID-BORDER-WIDTH 2)))
-      p)
-
-    ;; Memoize `hatch-path`, as the number of distinct paths should be small.
-    (define hatch-paths (make-hash))
-    (define (hatch-path divisions index)
-      (hash-ref! hatch-paths
-                 (array divisions index)
-                 (λ () (build-hatch-path divisions index))))
-    
-    (λ (client-ids)
-      (match client-ids
-        ;; Simple case: just a rounded rectangle.
-        [(list client-id)
-         (rounded-rectangle TILE-SIZE TILE-SIZE GRID-TILE-RADIUS
-                            #:border-color (color client-id)
-                            #:border-width GRID-BORDER-WIDTH)]
-
-        ;; Overlapping case: hatched rounded rectangle.
-        [(cons client-id client-ids)
-         (define divisions (add1 (length client-ids)))
-         (define paths
-           (for/list ([i (in-range 1 divisions)])
-             (hatch-path divisions i)))
-
-         (unsafe-dc
-          (λ (dc x y)
-            (define old-pen (send dc get-pen))
-            (define old-brush (send dc get-brush))
-            (define old-region (send dc get-clipping-region))
-            (define old-transform (send dc get-transformation))
-
-            (send dc set-brush (make-brush #:style 'transparent))
-            (send dc translate x y)
-            (define region (new region%))
-
-            (define (stroke-rect client-id)
-              (send dc set-pen (make-pen #:color (color client-id) #:width GRID-BORDER-WIDTH))
-              (send dc draw-rounded-rectangle 0 0 TILE-SIZE TILE-SIZE GRID-TILE-RADIUS))
-
-            (stroke-rect client-id)
-            (for ([client-id (in-list client-ids)]
-                  [path (in-list paths)])
-              (send region set-path path)
-              (send dc set-clipping-region region)
-              (stroke-rect client-id)
-              (send dc set-clipping-region #f))
-
-            (send dc set-transformation old-transform)
-            (send dc set-clipping-region old-region)
-            (send dc set-brush old-brush)
-            (send dc set-pen old-pen))
-          TILE-SIZE
-          TILE-SIZE)]))))
-
-(define board-renderer%
-  (class renderer%
-    (init-field [{board-w board-width}]
-                [{board-h board-height}])
-
-    (inherit freeze*
-             freeze/dc)
-
-    (super-new)
-
-    (define inner-w (* board-w TILE-SIZE))
-    (define inner-h (* board-h TILE-SIZE))
-    (define outer-w (+ inner-w GRID-BORDER-WIDTH))
-    (define outer-h (+ inner-h GRID-BORDER-WIDTH))
-
-    ;; -------------------------------------------------------------------------
-
-    (define/private (tile-bg color)
-      (~> (filled-rounded-rectangle (- TILE-SIZE GRID-LINE-WIDTH)
-                                    (- TILE-SIZE GRID-LINE-WIDTH)
-                                    GRID-TILE-RADIUS
-                                    #:draw-border? #f
-                                    #:color color)
-          freeze*
-          (inset (/ GRID-LINE-WIDTH 2))))
-
-    (define/private (tile-symbol symbol)
-      (cc-superimpose
-       (ghost empty-bg-1)
-       (freeze* symbol)))
-
-    (define empty-bg-1 (tile-bg TILE-EMPTY-COLOR-1))
-    (define draw-empty-bg-1 (make-pict-drawer empty-bg-1))
-    (define draw-empty-bg-2 (make-pict-drawer (tile-bg TILE-EMPTY-COLOR-2)))
-    (define draw-full-bg (make-pict-drawer (tile-bg TILE-FULL-COLOR)))
-
-    (define draw-cross (make-pict-drawer (tile-symbol (cross-symbol))))
-    (define draw-mark (make-pict-drawer (tile-symbol (mark-symbol))))
-
-    (define/private (draw-background dc board)
-      (define end-timing (timing-start 'draw-background))
-      (define old-transform (send dc get-transformation))
-      (send dc translate (/ GRID-BORDER-WIDTH 2) (/ GRID-BORDER-WIDTH 2))
-
-      (send dc set-pen (make-pen #:style 'transparent))
-      (send dc set-brush (make-brush #:color GRID-MINOR-COLOR))
-      (send dc draw-rectangle 0 0 inner-w inner-h)
-
-      (for* ([i (in-range board-w)]
-             [j (in-range board-h)])
-        (define x (* i TILE-SIZE))
-        (define y (* j TILE-SIZE))
-        (match (board-ref board i j)
-          ['full
-           (draw-full-bg dc x y)]
-          [other
-           (if (even? (+ i j))
-               (draw-empty-bg-1 dc x y)
-               (draw-empty-bg-2 dc x y))
-
-           (match other
-             ['empty (void)]
-             ['cross (draw-cross dc x y)]
-             ['mark  (draw-mark dc x y)])]))
-
-      (send dc set-transformation old-transform)
-      (end-timing))
-
-    ;; -------------------------------------------------------------------------
-
-    (define draw-major-grid-lines
-      (~> (freeze/dc
-           #:width outer-w
-           #:height outer-h
-           (λ (dc)
-             (define path (new dc-path%))
-             (send path rounded-rectangle
-                   0
-                   0
-                   outer-w
-                   outer-h
-                   (+ GRID-TILE-RADIUS (/ GRID-BORDER-WIDTH 2)))
-
-             (for* ([i (in-range 0 board-w GRID-MAJOR-INTERVAL)]
-                    [j (in-range 0 board-h GRID-MAJOR-INTERVAL)])
-               (define tile-w (min (- board-w i) GRID-MAJOR-INTERVAL))
-               (define tile-h (min (- board-h j) GRID-MAJOR-INTERVAL))
-               (send path rounded-rectangle
-                     (+ (* i TILE-SIZE) (/ GRID-BORDER-WIDTH 2) (/ GRID-LINE-WIDTH 2))
-                     (+ (* j TILE-SIZE) (/ GRID-BORDER-WIDTH 2) (/ GRID-LINE-WIDTH 2))
-                     (- (* TILE-SIZE tile-w) GRID-LINE-WIDTH)
-                     (- (* TILE-SIZE tile-h) GRID-LINE-WIDTH)
-                     GRID-TILE-RADIUS))
-
-             (send dc set-pen (make-pen #:style 'transparent))
-             (send dc set-brush (make-brush #:color GRID-MAJOR-COLOR))
-             (send dc draw-path path)))
-          make-pict-drawer))
-
-    ;; -------------------------------------------------------------------------
-
-    (define/public (draw dc board [x 0] [y 0])
-      (define old-pen (send dc get-pen))
-      (define old-brush (send dc get-brush))
-      (define old-smoothing (send dc get-smoothing))
-      (define old-transform (send dc get-transformation))
-
-      (send dc set-smoothing 'smoothed)
-      (send dc translate x y)
-
-      (draw-background dc board)
-      (define end-timing (timing-start 'draw-major-grid-lines))
-      (draw-major-grid-lines dc 0 0)
-      (end-timing)
-
-      (send dc set-transformation old-transform)
-      (send dc set-smoothing old-smoothing)
-      (send dc set-brush old-brush)
-      (send dc set-pen old-pen))
-
-    (define/public (get-pict board)
-      (unsafe-dc (λ (dc x y) (draw dc board x y))
-                 outer-w
-                 outer-h))))
-
-;; -----------------------------------------------------------------------------
-
-(define puzzle-renderer%
-  (class renderer%
-    (init-field puzzle
-                [output-scale 1.0]
-                [board-analysis #f])
-    (init [backing-scale 1.0])
-    (define specified-backing-scale backing-scale)
-    (define total-scale (* output-scale backing-scale))
-
-    (inherit freeze-to*)
-    (super-new [backing-scale total-scale])
-
-    (define cursor-locations (hasheqv))
-    (define grouped-cursor-locations (hash))
-
-    (define board-w (board-width (puzzle-board puzzle)))
-    (define board-h (board-height (puzzle-board puzzle)))
-    (define board-renderer
-      (new board-renderer%
-           [board-width board-w]
-           [board-height board-h]
-           [backing-scale total-scale]))
-
-    (define board-pict #f)
-    (define rendered-puzzle-bm-box (box #f))
-    (define rendered-puzzle #f)
-    (define tf:tile-to-puzzle #f)
-    (define tf:puzzle-to-tile #f)
-
-    (define/private (render!)
-      (define timing-end (timing-start 'render!))
-      (set! board-pict
-            (send board-renderer get-pict (puzzle-board puzzle)))
-
-      (define clues (puzzle-clues puzzle))
-      (set! rendered-puzzle
-            (~> (hb-append
-                 (~> (render-axis-clues 'row
-                                        (board-clues-row-clues clues)
-                                        (and~> board-analysis board-analysis-row-analysis))
-                     (inset 0 (/ GRID-BORDER-WIDTH 2)))
-                 (vr-append
-                  (~> (render-axis-clues 'column
-                                         (board-clues-column-clues clues)
-                                         (and~> board-analysis board-analysis-column-analysis))
-                      (inset (/ GRID-BORDER-WIDTH 2) 0))
-                  board-pict))
-                (freeze-to* rendered-puzzle-bm-box)
-                (inset 5)
-                (scale output-scale)))
-
-      (unless tf:tile-to-puzzle
-        (define t-to-p
-          (tf* (tf:child-to-world rendered-puzzle board-pict)
-               (tf:translate (/ GRID-BORDER-WIDTH 2)
-                             (/ GRID-BORDER-WIDTH 2))
-               (tf:scale TILE-SIZE)))
-
-        (set! tf:tile-to-puzzle t-to-p)
-        (set! tf:puzzle-to-tile (tf-invert t-to-p)))
-
-      (timing-end))
-
-    (define/private (overlay-cursors p)
-      (for/fold ([p p])
-                ([(tile-location client-ids) (in-immutable-hash grouped-cursor-locations)])
-        (match-define (point x y) (tf* tf:tile-to-puzzle tile-location))
-        (pin-over p x y (scale (tile-cursor client-ids) output-scale))))
-
-    (define/public (get-puzzle)
-      puzzle)
-    (define/public (get-output-scale)
-      output-scale)
-    (define/public (get-backing-scale)
-      specified-backing-scale)
-
-    (define/public (update! new-puzzle new-board-analysis new-cursor-locations)
-      (unless (and (equal? puzzle new-puzzle)
-                   (equal? board-analysis new-board-analysis))
-        (set! puzzle new-puzzle)
-        (set! board-analysis new-board-analysis)
-        (set! rendered-puzzle #f))
-      (unless (equal? cursor-locations new-cursor-locations)
-        (set! cursor-locations new-cursor-locations)
-        ;; Invert mapping from `client-id => location` to `location => (listof client-id)`
-        ;; to allow rendering overlapping cursors specially.
-        (set! grouped-cursor-locations
-              (for/foldr ([cursor-locations (hash)])
-                         ([client-id+location (in-list (hash->list new-cursor-locations #t))])
-                (match-define (cons client-id location) client-id+location)
-                (hash-update cursor-locations
-                             location
-                             (λ~> (cons client-id _))
-                             '())))))
-
-    (define/public (get-render [mouse-location #f])
-      (unless rendered-puzzle
-        (render!))
-      (overlay-cursors rendered-puzzle))
-
-    (define/public (get-size)
-      (pict-size (get-render)))
-
-    (define/public (get-tile-at mouse-location)
-      (get-render) ;; render if needed
-
-      (match-define (and tile-location (point tile-x tile-y))
-        (floor-point (tf* tf:puzzle-to-tile mouse-location)))
-
-      (define board (puzzle-board puzzle))
-      (define in-bounds?
-        (and (>= tile-x 0) (< tile-x (board-width board))
-             (>= tile-y 0) (< tile-y (board-height board))))
-
-      (and in-bounds? tile-location))))
-
-(define (get-base-puzzle-size pz)
-  (send (new puzzle-renderer% [puzzle pz]) get-size))
+;; render-tiles : board? -> pict?
+(define (render-tiles b)
+  (launder
+   (for/fold ([rows-p (blank)])
+             ([row (in-array (board-rows b))])
+     (vl-append
+      rows-p
+      (for/fold ([row-p (blank)])
+                ([cell (in-array row)])
+        (ht-append row-p (tile cell)))))))
 
 ;; -----------------------------------------------------------------------------
 
@@ -521,67 +60,13 @@
     ['done CLUE-DONE-COLOR]
     ['error CLUE-ERROR-COLOR]))
 
-(define CLUE-FONT
-  (make-font #:size CLUE-SIZE
-             #:size-in-pixels? #t
-             #:font-list the-font-list
-             #:hinting 'unaligned))
-
-(define MEGA-CLUE-FONT
-  (make-font #:size MEGA-CLUE-SIZE
-             #:size-in-pixels? #t
-             #:font-list the-font-list
-             #:hinting 'unaligned))
-
 ;; render-clue/single : clue? (or/c clue-analysis? 'error #f) -> pict?
-(define (render-clue/single clue [analysis #f])
-  (~> (text (number->string clue) CLUE-FONT)
-      (colorize (clue-analysis-color analysis))))
+(define (render-clue/single n [analysis #f])
+  (clue n #:color (clue-analysis-color analysis)))
 
 ;; render-clue/mega : axis? clue? (or/c clue-analysis? 'error #f) -> pict?
-(define (render-clue/mega axis clue [analysis #f])
-  (define clue-str (number->string clue))
-
-  (define font (if (or (eq? axis 'column) (= clue 2))
-                   CLUE-FONT
-                   MEGA-CLUE-FONT))
-  (define text-p (text clue-str font))
-  (define text-w (pict-width text-p))
-  (define text-h (pict-height text-p))
-
-  (define-values [total-w total-h text-x text-y]
-    (match axis
-      ['row
-       (define padding (if (= clue 2) MEGA-CLUE-TWO-PADDING MEGA-CLUE-PADDING))
-       (define total-h (* (- TILE-SIZE MEGA-CLUE-MARGIN) 2))
-       (values (+ text-w (* padding 2))
-               total-h
-               padding
-               (/ (- total-h text-h) 2))]
-      ['column
-       (define total-w (* (- TILE-SIZE MEGA-CLUE-MARGIN) 2))
-       (values total-w
-               text-h
-               (/ (- total-w text-w) 2)
-               0)]))
-
-  (define path (new dc-path%))
-  (send path rounded-rectangle 0 0 total-w total-h MEGA-CLUE-RADIUS)
-  (send path text-outline font clue-str text-x text-y)
-
-  (define pen (make-pen #:style 'transparent))
-  (define brush (make-brush #:color (clue-analysis-color analysis)))
-  (unsafe-dc
-   (λ (dc x y)
-     (define old-pen (send dc get-pen))
-     (define old-brush (send dc get-brush))
-     (send dc set-pen pen)
-     (send dc set-brush brush)
-     (send dc draw-path path x y)
-     (send dc set-brush old-brush)
-     (send dc set-pen old-pen))
-   total-w
-   total-h))
+(define (render-clue/mega axis n [analysis #f])
+  (mega-clue axis n #:color (clue-analysis-color analysis)))
 
 ;; render-line-clues/single : axis? single-line-clues? (or/c single-line-analysis? #f) -> pict?
 (define (render-line-clues/single axis line-clues [line-analysis #f])
@@ -592,7 +77,7 @@
                              (in-cycle (list line-analysis)))])
       (render-clue/single clue analysis)))
   (match axis
-    ['row    (hc-append (apply hc-append CLUE-GAP clue-picts)
+    ['row    (hc-append (apply hc-append clue-picts #:gap CLUE-GAP)
                         (blank 0 TILE-SIZE))]
     ['column (vc-append (apply vc-append clue-picts)
                         (blank TILE-SIZE 0))]))
@@ -626,7 +111,7 @@
                (inset 0 0 0 MEGA-CLUE-MARGIN)))])))
 
   (match axis
-    ['row    (hc-append (apply hc-append MEGA-CLUE-GAP chunk-picts)
+    ['row    (hc-append (apply hc-append chunk-picts #:gap MEGA-CLUE-GAP)
                         (blank 0 (* TILE-SIZE 2)))]
     ['column (vc-append (apply vc-append chunk-picts)
                         (blank (* TILE-SIZE 2) 0))]))
@@ -646,8 +131,270 @@
                                   (in-array axis-analysis)
                                   (in-cycle '(#f)))])
       (render-line-clues axis clue-line line-analysis)))
+  (define border-margin (/ GRID-BORDER-WIDTH 2))
   (~> (match axis
         ['row    (~> (apply vr-append line-picts)
-                     (inset 0 0 CLUE-BOARD-GAP 0))]
-        ['column (apply hb-append line-picts)])
-      (time-pict 'render-axis-clues)))
+                     (inset 0 0 CLUE-BOARD-GAP 0)
+                     (inset 0 border-margin))]
+        ['column (~> (apply hb-append line-picts)
+                     (inset border-margin 0))])
+      launder))
+
+;; -----------------------------------------------------------------------------
+
+;; A transformation that places (0, 0) at the top left of the viewport and
+;; (1, 1) at the bottom right.
+(define tf:base-view
+  (tf* (tf:translate -1.0 1.0)
+       (tf:scale 2.0 -2.0)))
+
+(define puzzle-renderer%
+  (class object%
+    (init-field gl-context
+                [{pz puzzle}]
+                [board-analysis #f]
+                [show-fps? #f])
+    (define cursor-locations (hasheqv))
+    (define grouped-cursor-locations (hash))
+    (super-new)
+
+    (define/private (with-gl-context thunk)
+      (send gl-context call-as-current thunk))
+    (define/private (swap-gl-buffers)
+      (send gl-context swap-buffers))
+
+    (define-values [prog:dc atlas-texture]
+      (with-gl-context
+       (λ ()
+         (glEnable GL_MULTISAMPLE)
+         (glClearColor 1.0 1.0 1.0 1.0)
+         (values (link-gl-dc-program)
+                 (make-gl-texture)))))
+
+    ;; -------------------------------------------------------------------------
+    ;; viewport
+
+    (define tf:view tf:base-view)
+    (define viewport-p (blank 1.0 1.0))
+
+    (define/public (set-size! width height)
+      (define width.0 (->fl width))
+      (define height.0 (->fl height))
+      (set! tf:view (tf* tf:base-view
+                         (tf:scale (/ width.0) (/ height.0))))
+      (set! viewport-p (blank width.0 height.0))
+      (with-gl-context
+       (λ () (glViewport 0 0 width height)))
+      (set-board-dirty!))
+
+    ;; -------------------------------------------------------------------------
+    ;; atlas
+
+    (define atlas-scale #f)
+    (define atlas #f)
+
+    (define/private (pack-atlas! #:scale scale)
+      (set! atlas-scale scale)
+      (set! atlas (sprite-atlas #:scale scale))
+      (gl-texture-load-bitmap! atlas-texture (atlas-bitmap atlas)))
+
+    ;; -------------------------------------------------------------------------
+    ;; layer contexts
+
+    (define board-bg-p #f)
+    (define board-grid-p #f)
+
+    (define/private (build-static-picts!)
+      (define board-w (board-width (puzzle-board pz)))
+      (define board-h (board-height (puzzle-board pz)))
+      (set! board-bg-p (board-background board-w board-h))
+      (set! board-grid-p (board-grid board-w board-h)))
+
+    (build-static-picts!)
+
+    (define board-bg-dc #f)
+    (define board-dc #f)
+    (define board-grid-dc #f)
+    (define overlay-dc #f)
+
+    (define/private (create-layer-dcs!)
+      (define (make-one #:usage [buffer-usage GL_STREAM_DRAW])
+        (make-gl-dc #:atlas atlas
+                    #:texture atlas-texture
+                    #:usage buffer-usage))
+
+      (define (make-static p)
+        (define dc (make-one #:usage GL_STATIC_DRAW))
+        ((pict-draw p) dc)
+        dc)
+
+      (set! board-bg-dc (make-static board-bg-p))
+      (set! board-grid-dc (make-static board-grid-p))
+      (set! board-dc (make-one #:usage GL_DYNAMIC_DRAW))
+      (set! overlay-dc (make-one)))
+
+    ;; -------------------------------------------------------------------------
+    ;; state updates
+
+    (define dirty? #t)
+    (define board-p #f)
+
+    (define/private (set-board-dirty!)
+      (set! dirty? #t)
+      (set! board-p #f))
+
+    (define/public (set-puzzle! new-pz)
+      (define old-pz pz)
+      (set! pz new-pz)
+      (cond
+        [(not (equal? (puzzle-clues old-pz) (puzzle-clues new-pz)))
+         (set! board-analysis #f)
+         (build-static-picts!)
+         (create-layer-dcs!)
+         (set-board-dirty!)]
+        [(not (equal? (puzzle-board old-pz) (puzzle-board new-pz)))
+         (set-board-dirty!)]))
+
+    (define/public (set-board-analysis! new-analysis)
+      (unless (equal? board-analysis new-analysis)
+        (set! board-analysis new-analysis)
+        (set-board-dirty!)))
+
+    (define/public (set-cursor-locations! new-locations)
+      (unless (equal? cursor-locations new-locations)
+        (set! cursor-locations new-locations)
+        ;; Invert mapping from `client-id => location` to `location => (listof client-id)`
+        ;; to allow rendering overlapping cursors specially.
+        (set! grouped-cursor-locations
+              (for/foldr ([cursor-locations (hash)])
+                         ([client-id+location (in-list (hash->list new-locations #t))])
+                (match-define (cons client-id location) client-id+location)
+                (hash-update cursor-locations
+                             location
+                             (λ~> (cons client-id _))
+                             '())))
+        (set! dirty? #t)))
+
+    (define/public (set-show-fps?! new-show-fps?)
+      (set! show-fps? (and new-show-fps? #t)))
+
+    ;; -------------------------------------------------------------------------
+    ;; coordinate mapping
+
+    (define tf:viewport-to-tile tf:identity)
+
+    (define/public (get-tile-at loc)
+      (define tile-loc (floor-point (tf* tf:viewport-to-tile loc)))
+      (match-define (point tx ty) tile-loc)
+      (define brd (puzzle-board pz))
+      (and (>= tx 0) (< tx (board-width brd))
+           (>= ty 0) (< ty (board-height brd))
+           tile-loc))
+
+    ;; -------------------------------------------------------------------------
+    ;; render
+
+    (define last-frame-ms #f)
+    (define frame-ms #f)
+
+    (define/private (fps-overlay)
+      (define fps-p
+        (text (~a (if (and frame-ms (not (zero? frame-ms)))
+                      (~r* (/ 1000.0 frame-ms) #:precision 0)
+                      "--")
+                  " fps")))
+
+      (define frame-ms-p
+        (text (~a (if frame-ms (~r* frame-ms #:precision '(= 1)) "--") " ms")))
+
+      (vr-append (scale fps-p 1.25) frame-ms-p))
+
+    (define/public (render!)
+      (when dirty?
+        (with-gl-context
+         (λ ()
+           ;; assemble board and clues
+           (define board-dirty? (not board-p))
+           (when board-dirty?
+             (define tiles-p (render-tiles (puzzle-board pz)))
+             (define row-clues-p
+               (render-axis-clues 'row
+                                  (board-clues-row-clues (puzzle-clues pz))
+                                  (and~> board-analysis board-analysis-row-analysis)))
+             (define column-clues-p
+               (render-axis-clues 'column
+                                  (board-clues-column-clues (puzzle-clues pz))
+                                  (and~> board-analysis board-analysis-column-analysis)))
+             (set! board-p
+                   (~> (cc-superimpose (ghost board-bg-p)
+                                       tiles-p
+                                       (ghost board-grid-p))
+                       (hb-append row-clues-p _)
+                       (vr-append column-clues-p _)
+                       (inset 2))))
+
+           ;; assemble scene
+           (define scene-p board-p)
+           (define scaled-scene-p (scale-to-fit scene-p viewport-p))
+           (define centered-scene-p (cc-superimpose viewport-p scaled-scene-p))
+           (define scene-scale (/ (pict-width scaled-scene-p) (pict-width scene-p)))
+           (define tf:tile-to-viewport (tf:tile-to-scene centered-scene-p board-bg-p))
+           (set! tf:viewport-to-tile (tf-invert tf:tile-to-viewport))
+
+           ;; repack atlas if necessary
+           (define target-atlas-scale (max 2 (inexact->exact (ceiling scene-scale))))
+           (unless (and atlas-scale (= atlas-scale target-atlas-scale))
+             (pack-atlas! #:scale target-atlas-scale)
+             (create-layer-dcs!))
+
+           ;; assemble overlays
+           (define overlay-p
+             (~> (for/fold ([p viewport-p])
+                           ([(tile-location client-ids) (in-immutable-hash grouped-cursor-locations)])
+                   ;; TODO: overlapping cursors
+                   (pin-over p #:hole cc-find
+                             (scale (cursor (first client-ids)) scene-scale)
+                             (tf* tf:tile-to-viewport
+                                  (tf:translate 0.5 0.5)
+                                  tile-location)))
+                 (when~> show-fps?
+                   (pin-over (scale (fps-overlay) 2)
+                             rt-find #:hole rt-find))))
+
+           ;; upload vertex data
+           (when board-dirty?
+             (gl-dc-clear! board-dc)
+             ((pict-draw centered-scene-p) board-dc))
+           (gl-dc-clear! overlay-dc)
+           ((pict-draw overlay-p) overlay-dc)
+
+           ;; draw
+           (glClear GL_COLOR_BUFFER_BIT)
+           (glEnable GL_BLEND)
+           (glBlendFunc GL_ONE GL_ONE_MINUS_SRC_ALPHA)
+
+           (use-gl-dc-program! prog:dc)
+           (define (bind-transform! [p centered-scene-p])
+             (gl-dc-program-bind!
+              prog:dc
+              #:transform (tf* tf:view (tf:child-to-parent centered-scene-p p))))
+
+           (bind-transform! board-bg-p)
+           (gl-dc-draw board-bg-dc)
+           (bind-transform!)
+           (gl-dc-draw board-dc)
+           (bind-transform! board-grid-p)
+           (gl-dc-draw board-grid-dc)
+
+           (bind-transform!)
+           (gl-dc-draw overlay-dc)
+
+           (swap-gl-buffers))))
+
+      (define now-ms (current-inexact-monotonic-milliseconds))
+      (when last-frame-ms
+        (define this-frame-ms (- now-ms last-frame-ms))
+        (set! frame-ms (if frame-ms
+                           (+ (* frame-ms 0.99) (* this-frame-ms 0.01))
+                           this-frame-ms)))
+      (set! last-frame-ms now-ms))))

@@ -3,7 +3,9 @@
 (require data/gvector
          racket/contract
          racket/match
+         racket/math
          racket/serialize
+         racket/string
          threading
          toolbox/pict
          toolbox/print
@@ -13,6 +15,7 @@
 (provide integer-point?
          (maybe-contract-out
           (struct point ([x real?] [y real?]))
+          [zero-point integer-point?]
           [point- (-> point? point? ... point?)]
           [truncate-point (-> point? integer-point?)]
           [floor-point (-> point? integer-point?)]
@@ -23,6 +26,7 @@
           [size-scaling-factor-to-fit (-> size? size? real?)]
 
           (struct rect ([x real?] [y real?] [width real?] [height real?]))
+          [zero-rect rect?]
           [rect-x2 (-> rect? real?)]
           [rect-y2 (-> rect? real?)]
           [rect-tl (-> rect? point?)]
@@ -31,14 +35,20 @@
           [rect-br (-> rect? point?)]
           [rect-empty? (-> rect? boolean?)]
           [normalize-rect (-> rect? rect?)]
+          [rect-scale-size (->* [rect? real?] [real?] rect?)]
+          [rect-scale-all (->* [rect? real?] [real?] rect?)]
+          [rect-transform/bounds (-> rect? transformation? rect?)]
           [rect-union (-> rect? rect? ... rect?)]
           [rect-contains? (-> rect? point? boolean?)]
           [rect-intersects? (-> rect? rect? boolean?)]
+          [pict-child-rect (->* [pict? pict?] [#:fail failure-result/c] any)]
 
           [dirty-rects? predicate/c]
           [make-dirty-rects (-> dirty-rects?)]
           [dirty-rects-add! (-> dirty-rects? rect? void?)]
-          [dirty-rects->list (-> dirty-rects? list?)])
+          [dirty-rects->list (-> dirty-rects? list?)]
+
+          [turns (-> real? real?)])
 
          tf:identity
          tf*
@@ -53,13 +63,20 @@
                          (-> point? transformation?)
                          (-> real? real? transformation?))]
           [tf:scale (->* [real?] [real?] transformation?)]
+          [tf:rotate (-> real? transformation?)]
           [tf-invert (-> transformation? transformation?)]
           [tf:world-to-child (-> pict? pict? transformation?)]
           [tf:child-to-world (-> pict? pict? transformation?)]))
 
 ;; -----------------------------------------------------------------------------
 
+(define not-given (gensym 'not-given))
+
+;; -----------------------------------------------------------------------------
+
 (serializable-struct point (x y) #:transparent)
+
+(define zero-point (point 0 0))
 
 (define point-
   (case-lambda
@@ -109,6 +126,8 @@
 
 (struct rect (x y width height) #:transparent)
 
+(define zero-rect (rect 0 0 0 0))
+
 (define (rect-x2 r) (+ (rect-x r) (rect-width r)))
 (define (rect-y2 r) (+ (rect-y r) (rect-height r)))
 
@@ -143,6 +162,30 @@
             (if h-neg? (- h) h))
       r))
 
+(define (rect-scale-size r sx [sy sx])
+  (match-define (rect x y w h) r)
+  (rect x y (* w sx) (* h sy)))
+
+(define (rect-scale-all r sx [sy sx])
+  (match-define (rect x y w h) r)
+  (rect (* x sx) (* y sy) (* w sx) (* h sy)))
+
+(define (rect-transform/bounds r tf)
+  (match-define (rect x y w h) r)
+  (define-values [min-x min-y max-x max-y]
+    (for*/fold ([min-x +inf.0]
+                [min-y +inf.0]
+                [max-x -inf.0]
+                [max-y -inf.0])
+               ([x (in-list (list x (+ x w)))]
+                [y (in-list (list y (+ y h)))])
+      (match-define (point x* y*) (tf* tf (point x y)))
+      (values (min min-x x*)
+              (min min-y y*)
+              (max max-x x*)
+              (max max-y y*))))
+  (rect min-x min-y (- max-x min-x) (- max-y min-y)))
+
 (define (rect-union r . rs)
   (for/fold ([r1 (normalize-rect r)])
             ([r2 (in-list rs)])
@@ -168,6 +211,20 @@
   (match-define (and r2* (rect x2 y2 _ _)) (normalize-rect r2))
   (or (rect-contains? r1* (point x2 y2))
       (rect-contains? r2* (point x1 y1))))
+
+(define/who (pict-child-rect parent child #:fail [fail not-given])
+  (with-handlers* ([(λ (exn)
+                      (and (exn:fail? exn)
+                           (string-contains? (exn-message exn) "sub-pict not found")))
+                    (λ (exn)
+                      (if (eq? fail not-given)
+                          (raise-arguments-error who "child pict not found"
+                                                 "child" child
+                                                 "parent" parent)
+                          (if (procedure? fail) (fail) fail)))])
+    (define-values [x1 y1] (lt-find parent child #:nth 'unique))
+    (define-values [x2 y2] (rb-find parent child #:nth 'unique))
+    (rect x1 y1 (- x2 x1) (- y2 y1))))
 
 ;; -----------------------------------------------------------------------------
 
@@ -200,6 +257,9 @@
 
 ;; -----------------------------------------------------------------------------
 
+(define (turns x)
+  (* pi 2 x))
+
 (struct transformation (xx yx x0
                         xy yy y0)
   #:transparent)
@@ -218,6 +278,12 @@
 (define (tf:scale sx [sy sx])
   (transformation sx 0.0 0.0
                   0.0 sy 0.0))
+
+(define (tf:rotate theta)
+  (define a (cos (- theta)))
+  (define b (sin (- theta)))
+  (transformation a (- b) 0.0
+                  b a     0.0))
 
 (define/who (tf-invert t)
   (match-define (transformation xx yx x0 xy yy y0) t)

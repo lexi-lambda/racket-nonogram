@@ -41,13 +41,15 @@
   (client-id
    world
    board-analysis
-   drag-mode)
+   drag-mode
+   show-fps?)
   #:transparent)
 
 (define (make-client-state client-id wld)
   (client-state client-id
                 wld
                 (analyze-puzzle (world-puzzle wld))
+                #f
                 #f))
 
 (serializable-struct action () #:transparent)
@@ -58,6 +60,8 @@
 
 (define (a:set-drag-mode new-mode)
   (a:local (λ (cs) (struct-copy client-state cs [drag-mode new-mode]))))
+(define (a:set-show-fps? new-show-fps?)
+  (a:local (λ (cs) (struct-copy client-state cs [show-fps? new-show-fps?]))))
 
 (define (echo-action? action)
   (match action
@@ -188,8 +192,11 @@
             (struct-copy puzzle old-puzzle
                          [board (board-clear (puzzle-board old-puzzle))])]
            [_ old-puzzle]))
-       (unless/list (equal? old-puzzle new-puzzle)
-         (a:set-puzzle new-puzzle))]
+       (append
+        (when/list (eq? key-code 'f8)
+          (a:set-show-fps? (not (client-state-show-fps? cs))))
+        (unless/list (equal? old-puzzle new-puzzle)
+          (a:set-puzzle new-puzzle)))]
       [_ '()]))
 
   (begin0
@@ -326,7 +333,6 @@
 
   (define (perform-action! client-id action from-server?)
     (set! this-cs (perform-action this-cs client-id action))
-    (send canvas need-refresh!)
     (unless (a:local? action)
       (when (not from-server?)
         (send-to-server! action))
@@ -384,32 +390,36 @@
     (new
      (class canvas%
        (inherit get-client-size
+                get-gl-client-size
                 get-dc
                 refresh-now)
 
-       (define needs-refresh? #t)
-       (define mouse-location #f)
+       (super-new
+        [parent frame]
+        [min-width 100]
+        [min-height 100]
+        [style '(gl no-autoclear)]
+        [gl-config default-gl-config])
 
-       (define base-size #f)
-       (define puzzle-renderer #f)
-       (define tf:canvas-to-render tf:identity)
+       (define tf:canvas-to-gl
+         (let ()
+           (define-values [width height] (get-client-size))
+           (define-values [gl-width gl-height] (get-gl-client-size))
+           (tf:scale (/ (real->double-flonum gl-width) width)
+                     (/ (real->double-flonum gl-height) height))))
+
+       (define puzzle-renderer
+         (new puzzle-renderer%
+              [gl-context (send (get-dc) get-gl-context)]
+              [puzzle (world-puzzle (client-state-world this-cs))]))
 
        (define/override (on-event event)
          (when puzzle-renderer
            (define event-type (send event get-event-type))
            (define location (point (send event get-x)
                                    (send event get-y)))
-           (match event-type
-             ['motion
-              (set! mouse-location location)
-              (need-refresh!)]
-             ['leave
-              (set! mouse-location #f)
-              (need-refresh!)]
-             [_ (void)])
-
            (define tile-loc (send puzzle-renderer get-tile-at
-                                    (tf* tf:canvas-to-render location)))
+                                    (tf* tf:canvas-to-gl location)))
            (enqueue-update!
             (list 'mouse-event
                   event-type
@@ -427,80 +437,20 @@
                 key-code
                 (event->modifier-keys event))))
 
-       (define/public (need-refresh!)
-         (set! needs-refresh? #t))
-
-       (define/private (update-renderer!)
-         (define cs this-cs)
-         (define wld (client-state-world cs))
-         (define backing-scale (send (get-dc) get-backing-scale))
-
-         (define (create-fresh-renderer! output-scale)
-           (set! puzzle-renderer
-                 (new puzzle-renderer%
-                      [puzzle (world-puzzle wld)]
-                      [board-analysis (client-state-board-analysis cs)]
-                      [output-scale output-scale]
-                      [backing-scale backing-scale])))
-
-         (cond
-           [(or (not puzzle-renderer)
-                (not (equal? (puzzle-clues (world-puzzle wld))
-                             (puzzle-clues (send puzzle-renderer get-puzzle)))))
-            (set! base-size (get-base-puzzle-size (world-puzzle wld)))
-            (define output-scale (calculate-output-scale))
-            (create-fresh-renderer! output-scale)]
-           [else
-            (define output-scale (calculate-output-scale))
-            (cond
-              [(or (not (= output-scale (send puzzle-renderer get-output-scale)))
-                   (not (= backing-scale (send puzzle-renderer get-backing-scale))))
-               (create-fresh-renderer! output-scale)]
-              [else
-               (send puzzle-renderer update!
-                     (world-puzzle wld)
-                     (client-state-board-analysis cs)
-                     (world-cursor-locations wld))])]))
-
-       (define/private (calculate-output-scale)
-         (define-values [w h] (get-client-size))
-         (size-scaling-factor-to-fit base-size (size w h)))
-       (define/private (get-bounds-pict)
-         (define-values [w h] (get-client-size))
-         (blank w h))
-
-       (define/private (paint dc)
-         (update-renderer!)
-         (define rendered-p (send puzzle-renderer get-render))
-
-         (define centered-p (cc-superimpose (get-bounds-pict) rendered-p))
-         (define render-loc (truncate-point (pict-child-point centered-p rendered-p)))
-         (set! tf:canvas-to-render (tf:translate (point- render-loc)))
-
-         (send dc set-smoothing 'smoothed)
-         (define timing-end (timing-start 'blit))
-         (draw-pict rendered-p dc (point-x render-loc) (point-y render-loc))
-         (timing-end))
-
        (define/public (do-refresh)
          (collect-garbage 'incremental)
-         (when needs-refresh?
-           (set! needs-refresh? #f)
-           (refresh-now (λ (dc) (paint dc)))))
-
-       (define/override (on-paint)
-         (super on-paint)
-         (paint (get-dc)))
+         (define cs this-cs)
+         (define wld (client-state-world cs))
+         (send puzzle-renderer set-puzzle! (world-puzzle wld))
+         (send puzzle-renderer set-board-analysis! (client-state-board-analysis cs))
+         (send puzzle-renderer set-cursor-locations! (world-cursor-locations wld))
+         (send puzzle-renderer set-show-fps?! (client-state-show-fps? cs))
+         (send puzzle-renderer render!))
 
        (define/override (on-size w h)
-         (set! needs-refresh? #t)
          (super on-size w h)
-         (do-refresh))
-
-       (super-new
-        [parent frame]
-        [min-width 100]
-        [min-height 100]))))
+         (define-values [gl-w gl-h] (get-gl-client-size))
+         (send puzzle-renderer set-size! gl-w gl-h)))))
 
   (define refresh-timer
     (new timer%

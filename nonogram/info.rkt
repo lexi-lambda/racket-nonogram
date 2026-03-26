@@ -10,11 +10,13 @@
     "data-lib"
     "draw-lib"
     "gui-lib"
+    "opengl"
     "pict-lib"
     "rfc6455"
     "threading-lib"
     "toolbox-lib"
     "toolbox-draw-lib"))
 (define build-deps
-  '("compiler-lib"
+  '("at-exp-lib"
+    "compiler-lib"
     "rackunit-lib"))
