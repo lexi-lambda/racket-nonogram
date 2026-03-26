@@ -357,18 +357,31 @@
                (create-layer-dcs!))
 
              ;; assemble overlays
+             (define-values [plain-cursors-p hatched-cursors]
+               (for/fold ([plain-p viewport-p]
+                          [hatched-cursors '()])
+                         ([(tile-loc client-ids) (in-immutable-hash grouped-cursor-locations)])
+                 ; render the first cursor normally
+                 (define cursor-p (cursor (first client-ids)))
+                 (define plain-p*
+                   (pin-over (launder plain-p)
+                             (scale cursor-p scene-scale)
+                             (tf* tf:tile-to-viewport
+                                  (tf:translate 0.5 0.5)
+                                  tile-loc)
+                             #:hole cc-find))
+                 (values plain-p*
+                         (if (empty? (rest client-ids))
+                             hatched-cursors
+                             ; accumulate any subsequent cursors for hatched rendering
+                             (cons (cons (tf:child-to-parent plain-p* cursor-p)
+                                         (map cursor (rest client-ids)))
+                                   hatched-cursors)))))
              (define overlay-p
-               (~> (for/fold ([p viewport-p])
-                             ([(tile-location client-ids) (in-immutable-hash grouped-cursor-locations)])
-                     ;; TODO: overlapping cursors
-                     (pin-over p #:hole cc-find
-                               (scale (cursor (first client-ids)) scene-scale)
-                               (tf* tf:tile-to-viewport
-                                    (tf:translate 0.5 0.5)
-                                    tile-location)))
+               (~> plain-cursors-p
                    (when~> show-fps?
-                           (pin-over (scale (fps-overlay) 2)
-                                     rt-find #:hole rt-find))))
+                     (pin-over (scale (fps-overlay) 2)
+                               rt-find #:hole rt-find))))
 
              ;; upload vertex data
              (when board-dirty?
@@ -397,6 +410,23 @@
 
              (bind-transform!)
              (gl-dc-draw overlay-dc)
+
+             ;; draw hatched cursors
+             (for ([hatched-cursor (in-list hatched-cursors)])
+               (match-define (cons tf cursor-ps) hatched-cursor)
+               (define divisions (add1 (length cursor-ps)))
+               (for ([cursor-p (in-list cursor-ps)]
+                     [i (in-naturals 1)])
+                 (gl-dc-clear! overlay-dc)
+                 ((pict-draw cursor-p) overlay-dc)
+                 (gl-dc-program-bind!
+                  prog:dc
+                  #:transform (tf* tf:view tf)
+                  #:hatch-divisions divisions
+                  #:hatch-transform (tf:diag-hatch #:divisions divisions
+                                                   #:index i
+                                                   #:scale (/ CURSOR-STRIPES (pict-width cursor-p))))
+                 (gl-dc-draw overlay-dc)))
 
              (swap-gl-buffers)))))
 

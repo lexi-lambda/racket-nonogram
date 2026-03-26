@@ -8,6 +8,8 @@
          racket/contract
          racket/gui/base
          racket/match
+         racket/string
+         threading
          toolbox/color
          toolbox/who
          "../contract.rkt"
@@ -37,6 +39,7 @@
 
           [tf->mat3 (-> transformation? f32vector?)]
           [glUniformMatrix3f/tf (-> exact-nonnegative-integer? transformation? void?)]
+          [tf->glsl-mat3 (-> transformation? string?)]
 
           [program? predicate/c]
           [program-id (-> program? exact-nonnegative-integer?)]
@@ -112,6 +115,12 @@
 
 (define (glUniformMatrix3f/tf id tf)
   (glUniformMatrix3fv id 1 #f (tf->mat3 tf)))
+
+(define (tf->glsl-mat3 t)
+  (~> (f32vector->list (tf->mat3 t))
+      (map number->string _)
+      (string-join ",")
+      (string-append "mat3(" _ ")")))
 
 ;; -----------------------------------------------------------------------------
 

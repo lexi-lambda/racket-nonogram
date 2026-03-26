@@ -5,6 +5,7 @@
          opengl
          racket/class
          racket/contract
+         racket/flonum
          racket/format
          racket/match
          toolbox/color
@@ -33,9 +34,21 @@
                                       #:texture-mode texture-mode/c]
                                      void?)]
 
+          [tf:diag-hatch (->* [#:divisions exact-integer?
+                               #:index real?]
+                              [#:scale real?]
+                              transformation?)]
           [link-gl-dc-program (-> program?)]
-          [use-gl-dc-program! (->* [program?] [#:transform transformation?] void?)]
-          [gl-dc-program-bind! (->* [program?] [#:transform (or/c transformation? #f)] void?)]))
+          [use-gl-dc-program! (->* [program?]
+                                   [#:transform transformation?
+                                    #:hatch-divisions exact-integer?
+                                    #:hatch-transform transformation?]
+                                   void?)]
+          [gl-dc-program-bind! (->* [program?]
+                                    [#:transform (or/c transformation? #f)
+                                     #:hatch-divisions (or/c exact-integer? #f)
+                                     #:hatch-transform (or/c transformation? #f)]
+                                    void?)]))
 
 ;; -----------------------------------------------------------------------------
 
@@ -230,23 +243,26 @@
 (define vs:dc
   @~a{#version 330 core
       layout(location = 0) in uint flagsIn;
-      layout(location = 1) in vec2 position;
+      layout(location = 1) in vec2 positionIn;
       layout(location = 2) in vec4 colorIn;
-      layout(location = 3) in vec2 texCoordIn;
+      layout(location = 3) in vec2 tex_positionIn;
 
       flat out uint flags;
       out vec4 color;
-      out vec2 texCoord;
+      out vec2 tex_position;
+      out vec2 hatch_position;
 
       uniform mat3 transform;
+      uniform mat3 hatch_tf;
 
       void main() {
-        gl_Position.xyw = transform * vec3(position, 1);
+        gl_Position.xyw = transform * vec3(positionIn, 1);
         gl_Position.z = 0;
 
         flags = flagsIn;
         color = colorIn;
-        texCoord = texCoordIn;
+        tex_position = tex_positionIn;
+        hatch_position = (hatch_tf * vec3(positionIn, 1)).xy;
       }})
 
 (define fs:dc
@@ -255,12 +271,21 @@
 
       flat in uint flags;
       in vec4 color;
-      in vec2 texCoord;
 
       uniform sampler2D tex;
+      in vec2 tex_position;
+
+      // used only for rendering overlapping cursors
+      uniform int hatch_divisions;
+      in vec2 hatch_position;
 
       void main() {
         uint textureMode = flags;
+
+        if (hatch_divisions >= 2) {
+          int stripe = int(floor(fract(hatch_position.x) * hatch_divisions));
+          if (stripe != 0) discard;
+        }
 
         // color data currently uses unassociated alpha
         vec4 colorAssoc;
@@ -272,27 +297,55 @@
             fragColor = colorAssoc;
             break;
           case @texture-mode->int['texture]:
-            fragColor = texture(tex, texCoord);
+            fragColor = texture(tex, tex_position);
             break;
           case @texture-mode->int['mask]:
-            fragColor = colorAssoc * texture(tex, texCoord).a;
+            fragColor = colorAssoc * texture(tex, tex_position).a;
             break;
           case @texture-mode->int['inverted-mask]:
-            fragColor = colorAssoc * (1.0 - texture(tex, texCoord).a);
+            fragColor = colorAssoc * (1.0 - texture(tex, tex_position).a);
             break;
         }
       }})
 
-(define (link-gl-dc-program)
-  (link-program vs:dc fs:dc '(transform layerAlpha)))
+(define (tf:hatch #:divisions divisions
+                  #:index index
+                  #:angle angle
+                  #:scale [scale 1.0])
+  (tf* (tf:translate (- (/ index (->fl divisions))) 0.0)
+       (tf:scale scale)
+       (tf:rotate (- angle))))
 
-(define (use-gl-dc-program! prog #:transform [tf tf:identity])
+(define (tf:diag-hatch #:divisions divisions
+                       #:index index
+                       #:scale [scale 1.0])
+  (tf:hatch #:divisions divisions
+            #:index index
+            #:angle (turns -1/8)
+            #:scale (/ scale (sqrt 2))))
+
+(define (link-gl-dc-program)
+  (link-program vs:dc fs:dc '(transform hatch_divisions hatch_index hatch_tf)))
+
+(define (use-gl-dc-program! prog
+                            #:transform [tf tf:identity]
+                            #:hatch-divisions [hatch-divisions 0]
+                            #:hatch-transform [hatch-tf tf:identity])
   (use-program!
    prog
-   (list glUniformMatrix3f/tf 'transform tf)))
+   (list glUniformMatrix3f/tf 'transform tf)
+   (list glUniform1i 'hatch_divisions hatch-divisions)
+   (list glUniformMatrix3f/tf 'hatch_tf hatch-tf)))
 
-(define (gl-dc-program-bind! prog #:transform [tf #f])
+(define (gl-dc-program-bind! prog
+                             #:transform [tf #f]
+                             #:hatch-divisions [hatch-divisions #f]
+                             #:hatch-transform [hatch-tf #f])
   (apply program-bind! prog
          (append
           (when/list tf
-            (list glUniformMatrix3f/tf 'transform tf)))))
+            (list glUniformMatrix3f/tf 'transform tf))
+          (when/list hatch-divisions
+            (list glUniform1i 'hatch_divisions hatch-divisions))
+          (when/list hatch-tf
+            (list glUniformMatrix3f/tf 'hatch_tf hatch-tf)))))

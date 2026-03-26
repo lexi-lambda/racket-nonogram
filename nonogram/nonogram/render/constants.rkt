@@ -38,6 +38,7 @@
 (define GRID-BORDER-WIDTH 2)
 (define GRID-TILE-RADIUS 2)
 
+(define CURSOR-STRIPES 4)
 (define CURSOR-COLORS
   (array (make-color #x3d #x7b #xe0)
          (make-color #xe0 #x3d #x3d)
