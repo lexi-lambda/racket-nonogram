@@ -315,83 +315,84 @@
         (set! dirty? #f)
         (with-gl-context
          (λ ()
-           ;; assemble board and clues
-           (define board-dirty? (not board-p))
-           (when board-dirty?
-             (define tiles-p (render-tiles (puzzle-board pz)))
-             (define row-clues-p
-               (render-axis-clues 'row
-                                  (board-clues-row-clues (puzzle-clues pz))
-                                  (and~> board-analysis board-analysis-row-analysis)))
-             (define column-clues-p
-               (render-axis-clues 'column
-                                  (board-clues-column-clues (puzzle-clues pz))
-                                  (and~> board-analysis board-analysis-column-analysis)))
-             (set! board-p
-                   (~> (cc-superimpose (ghost board-bg-p)
-                                       tiles-p
-                                       (ghost board-grid-p))
-                       (hb-append row-clues-p _)
-                       (vr-append column-clues-p _)
-                       (inset 2))))
+           (when (= (glCheckFramebufferStatus GL_DRAW_FRAMEBUFFER) GL_FRAMEBUFFER_COMPLETE)
+             ;; assemble board and clues
+             (define board-dirty? (not board-p))
+             (when board-dirty?
+               (define tiles-p (render-tiles (puzzle-board pz)))
+               (define row-clues-p
+                 (render-axis-clues 'row
+                                    (board-clues-row-clues (puzzle-clues pz))
+                                    (and~> board-analysis board-analysis-row-analysis)))
+               (define column-clues-p
+                 (render-axis-clues 'column
+                                    (board-clues-column-clues (puzzle-clues pz))
+                                    (and~> board-analysis board-analysis-column-analysis)))
+               (set! board-p
+                     (~> (cc-superimpose (ghost board-bg-p)
+                                         tiles-p
+                                         (ghost board-grid-p))
+                         (hb-append row-clues-p _)
+                         (vr-append column-clues-p _)
+                         (inset 2))))
 
-           ;; assemble scene
-           (define scene-p board-p)
-           (define scaled-scene-p (scale-to-fit scene-p viewport-p))
-           (define centered-scene-p (cc-superimpose viewport-p scaled-scene-p))
-           (define scene-scale (/ (pict-width scaled-scene-p) (pict-width scene-p)))
-           (define tf:tile-to-viewport (tf:tile-to-scene centered-scene-p board-bg-p))
-           (set! tf:viewport-to-tile (tf-invert tf:tile-to-viewport))
+             ;; assemble scene
+             (define scene-p board-p)
+             (define scaled-scene-p (scale-to-fit scene-p viewport-p))
+             (define centered-scene-p (cc-superimpose viewport-p scaled-scene-p))
+             (define scene-scale (/ (pict-width scaled-scene-p) (pict-width scene-p)))
+             (define tf:tile-to-viewport (tf:tile-to-scene centered-scene-p board-bg-p))
+             (set! tf:viewport-to-tile (tf-invert tf:tile-to-viewport))
 
-           ;; repack atlas if necessary
-           (define target-atlas-scale (max 2 (inexact->exact (ceiling scene-scale))))
-           (unless (and atlas-scale (= atlas-scale target-atlas-scale))
-             (pack-atlas! #:scale target-atlas-scale)
-             (create-layer-dcs!))
+             ;; repack atlas if necessary
+             (define target-atlas-scale (max 2 (inexact->exact (ceiling scene-scale))))
+             (unless (and atlas-scale (= atlas-scale target-atlas-scale))
+               (pack-atlas! #:scale target-atlas-scale)
+               (create-layer-dcs!))
 
-           ;; assemble overlays
-           (define overlay-p
-             (~> (for/fold ([p viewport-p])
-                           ([(tile-location client-ids) (in-immutable-hash grouped-cursor-locations)])
-                   ;; TODO: overlapping cursors
-                   (pin-over p #:hole cc-find
-                             (scale (cursor (first client-ids)) scene-scale)
-                             (tf* tf:tile-to-viewport
-                                  (tf:translate 0.5 0.5)
-                                  tile-location)))
-                 (when~> show-fps?
-                   (pin-over (scale (fps-overlay) 2)
-                             rt-find #:hole rt-find))))
+             ;; assemble overlays
+             (define overlay-p
+               (~> (for/fold ([p viewport-p])
+                             ([(tile-location client-ids) (in-immutable-hash grouped-cursor-locations)])
+                     ;; TODO: overlapping cursors
+                     (pin-over p #:hole cc-find
+                               (scale (cursor (first client-ids)) scene-scale)
+                               (tf* tf:tile-to-viewport
+                                    (tf:translate 0.5 0.5)
+                                    tile-location)))
+                   (when~> show-fps?
+                           (pin-over (scale (fps-overlay) 2)
+                                     rt-find #:hole rt-find))))
 
-           ;; upload vertex data
-           (when board-dirty?
-             (gl-dc-clear! board-dc)
-             ((pict-draw centered-scene-p) board-dc))
-           (gl-dc-clear! overlay-dc)
-           ((pict-draw overlay-p) overlay-dc)
+             ;; upload vertex data
+             (when board-dirty?
+               (gl-dc-clear! board-dc)
+               ((pict-draw centered-scene-p) board-dc))
+             (gl-dc-clear! overlay-dc)
+             ((pict-draw overlay-p) overlay-dc)
 
-           ;; draw
-           (glClear GL_COLOR_BUFFER_BIT)
-           (glEnable GL_BLEND)
-           (glBlendFunc GL_ONE GL_ONE_MINUS_SRC_ALPHA)
+             ;; draw
+             (glClear GL_COLOR_BUFFER_BIT)
+             (glEnable GL_BLEND)
+             (glBlendFunc GL_ONE GL_ONE_MINUS_SRC_ALPHA)
 
-           (use-gl-dc-program! prog:dc)
-           (define (bind-transform! [p centered-scene-p])
-             (gl-dc-program-bind!
-              prog:dc
-              #:transform (tf* tf:view (tf:child-to-parent centered-scene-p p))))
+             (use-gl-dc-program! prog:dc)
+             (define (bind-transform! [p centered-scene-p])
+               (gl-dc-program-bind!
+                prog:dc
+                #:transform (tf* tf:view (tf:child-to-parent centered-scene-p p))))
 
-           (bind-transform! board-bg-p)
-           (gl-dc-draw board-bg-dc)
-           (bind-transform!)
-           (gl-dc-draw board-dc)
-           (bind-transform! board-grid-p)
-           (gl-dc-draw board-grid-dc)
+             (bind-transform! board-bg-p)
+             (gl-dc-draw board-bg-dc)
+             (bind-transform!)
+             (gl-dc-draw board-dc)
+             (bind-transform! board-grid-p)
+             (gl-dc-draw board-grid-dc)
 
-           (bind-transform!)
-           (gl-dc-draw overlay-dc)
+             (bind-transform!)
+             (gl-dc-draw overlay-dc)
 
-           (swap-gl-buffers))))
+             (swap-gl-buffers)))))
 
       (define now-ms (current-inexact-monotonic-milliseconds))
       (when last-frame-ms
