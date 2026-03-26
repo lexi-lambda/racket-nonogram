@@ -5,7 +5,6 @@
                      syntax/transformer)
          racket/contract
          racket/match
-         racket/math
          racket/vector
 
          (only-in racket/base

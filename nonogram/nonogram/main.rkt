@@ -3,8 +3,6 @@
 (require file/gunzip
          file/gzip
          net/rfc6455
-         net/url
-         pict
          racket/class
          racket/contract
          racket/fasl
@@ -16,9 +14,8 @@
          racket/serialize
          threading
          toolbox/list
-         toolbox/logging
          "core.rkt"
-         "geometry.rkt"
+         "lib/geometry.rkt"
          "logger.rkt"
          "render.rkt"
          "solve.rkt")
@@ -491,8 +488,10 @@
 ;; -----------------------------------------------------------------------------
 
 (module+ main
-  (require racket/cmdline
+  (require net/url
+           racket/cmdline
            racket/string
+           toolbox/logging
            "lib/array.rkt"
            (submod "core.rkt" example))
 

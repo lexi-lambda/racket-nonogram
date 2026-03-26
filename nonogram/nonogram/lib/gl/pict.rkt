@@ -9,9 +9,9 @@
          racket/match
          toolbox/color
          toolbox/who
-         "../../geometry.rkt"
          "../atlas.rkt"
          "../contract.rkt"
+         "../geometry.rkt"
          "core.rkt"
          "dc.rkt")
 

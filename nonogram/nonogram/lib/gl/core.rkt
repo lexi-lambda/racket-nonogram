@@ -4,16 +4,14 @@
          ffi/vector
          opengl
          opengl/util
-         pict/convert
          racket/class
          racket/contract
          racket/gui/base
          racket/match
          toolbox/color
          toolbox/who
-         "../../geometry.rkt"
-         "../atlas.rkt"
-         "../contract.rkt")
+         "../contract.rkt"
+         "../geometry.rkt")
 
 (provide (maybe-contract-out
           [float-size exact-nonnegative-integer?]

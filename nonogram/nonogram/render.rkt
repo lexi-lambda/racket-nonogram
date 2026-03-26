@@ -11,10 +11,10 @@
          racket/math
          toolbox/format
          threading
-         (except-in "geometry.rkt" pict-size)
          "core.rkt"
          "lib/array.rkt"
          "lib/atlas.rkt"
+         (except-in "lib/geometry.rkt" pict-size)
          "lib/gl/core.rkt"
          "lib/gl/dc.rkt"
          "lib/gl/pict.rkt"

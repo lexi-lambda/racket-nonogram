@@ -3,19 +3,17 @@
 (require (only-in ffi/unsafe _float memcpy register-finalizer)
          ffi/vector
          opengl
-         opengl/util
          racket/class
          racket/contract
-         racket/draw
          racket/format
          racket/match
          toolbox/color
          toolbox/list
          toolbox/pict
          toolbox/who
-         "../../geometry.rkt"
          "../atlas.rkt"
          "../contract.rkt"
+         "../geometry.rkt"
          "core.rkt")
 
 (provide (maybe-contract-out

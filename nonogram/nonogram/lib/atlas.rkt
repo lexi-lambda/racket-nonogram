@@ -9,8 +9,8 @@
          threading
          toolbox/pict
          toolbox/who
-         "../geometry.rkt"
-         "contract.rkt")
+         "contract.rkt"
+         "geometry.rkt")
 
 (provide (maybe-contract-out
           [atlas? predicate/c]

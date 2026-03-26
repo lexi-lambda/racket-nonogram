@@ -10,10 +10,10 @@
          toolbox/color
          toolbox/pict
          "../core.rkt"
-         "../geometry.rkt"
          "../lib/array.rkt"
          "../lib/atlas.rkt"
          "../lib/contract.rkt"
+         "../lib/geometry.rkt"
          "../lib/gl/dc.rkt"
          (prefix-in gl: "../lib/gl/pict.rkt")
          "constants.rkt")

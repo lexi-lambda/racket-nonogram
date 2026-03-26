@@ -6,11 +6,10 @@
          racket/math
          racket/serialize
          racket/string
-         threading
          toolbox/pict
          toolbox/print
          toolbox/who
-         "lib/contract.rkt")
+         "contract.rkt")
 
 (provide integer-point?
          (maybe-contract-out
