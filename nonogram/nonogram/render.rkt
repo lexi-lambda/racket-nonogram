@@ -160,7 +160,10 @@
     (super-new)
 
     (define/private (with-gl-context thunk)
-      (send gl-context call-as-current thunk))
+      ; work around racket/draw#60
+      (if (get-current-gl-context)
+          (thunk)
+          (send gl-context call-as-current thunk)))
     (define/private (swap-gl-buffers)
       (send gl-context swap-buffers))
 
@@ -219,20 +222,22 @@
     (define overlay-dc #f)
 
     (define/private (create-layer-dcs!)
-      (define (make-one #:usage [buffer-usage GL_STREAM_DRAW])
-        (make-gl-dc #:atlas atlas
-                    #:texture atlas-texture
-                    #:usage buffer-usage))
+      (with-gl-context
+       (λ ()
+         (define (make-one #:usage [buffer-usage GL_STREAM_DRAW])
+           (make-gl-dc #:atlas atlas
+                       #:texture atlas-texture
+                       #:usage buffer-usage))
 
-      (define (make-static p)
-        (define dc (make-one #:usage GL_STATIC_DRAW))
-        ((pict-draw p) dc)
-        dc)
+         (define (make-static p)
+           (define dc (make-one #:usage GL_STATIC_DRAW))
+           ((pict-draw p) dc)
+           dc)
 
-      (set! board-bg-dc (make-static board-bg-p))
-      (set! board-grid-dc (make-static board-grid-p))
-      (set! board-dc (make-one #:usage GL_DYNAMIC_DRAW))
-      (set! overlay-dc (make-one)))
+         (set! board-bg-dc (make-static board-bg-p))
+         (set! board-grid-dc (make-static board-grid-p))
+         (set! board-dc (make-one #:usage GL_DYNAMIC_DRAW))
+         (set! overlay-dc (make-one)))))
 
     ;; -------------------------------------------------------------------------
     ;; state updates
