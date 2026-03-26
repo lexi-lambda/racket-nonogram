@@ -401,12 +401,11 @@
         [style '(gl no-autoclear)]
         [gl-config default-gl-config])
 
-       (define tf:canvas-to-gl
-         (let ()
-           (define-values [width height] (get-client-size))
-           (define-values [gl-width gl-height] (get-gl-client-size))
-           (tf:scale (/ (real->double-flonum gl-width) width)
-                     (/ (real->double-flonum gl-height) height))))
+       (define/private (tf:canvas-to-gl)
+         (define-values [width height] (get-client-size))
+         (define-values [gl-width gl-height] (get-gl-client-size))
+         (tf:scale (/ (real->double-flonum gl-width) width)
+                   (/ (real->double-flonum gl-height) height)))
 
        (define puzzle-renderer
          (new puzzle-renderer%
@@ -419,7 +418,7 @@
            (define location (point (send event get-x)
                                    (send event get-y)))
            (define tile-loc (send puzzle-renderer get-tile-at
-                                    (tf* tf:canvas-to-gl location)))
+                                    (tf* (tf:canvas-to-gl) location)))
            (enqueue-update!
             (list 'mouse-event
                   event-type
