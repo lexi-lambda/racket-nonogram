@@ -16,6 +16,11 @@
     #:description #f
     #:attributes [no-ctc {ctc-e 1}]
     #:literals [struct]
+    #:datum-literals [rename]
+    (pattern (rename internal-id:id external-id:id ctc:expr)
+      #:attr no-ctc (syntax/loc this-syntax
+                      (rename-out [internal-id external-id]))
+      #:attr {ctc-e 1} (list #'ctc))
     (pattern (struct ~! struct-id:id ([_:id ctc-e:expr] ...))
       #:attr no-ctc (syntax/loc this-syntax
                       (struct-out struct-id)))

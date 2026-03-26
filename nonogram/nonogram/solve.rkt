@@ -1,21 +1,21 @@
 #lang racket/base
 
 (require racket/contract
-         racket/list
          racket/match
          racket/random
          racket/set
          threading
          toolbox/who
          "core.rkt"
-         "geometry.rkt"
          "lib/array.rkt"
+         "lib/geometry.rkt"
          "solve/core.rkt"
          "solve/mega-line.rkt"
          "solve/single-line.rkt")
 
 (module+ test
   (require racket/exn
+           racket/list
            racket/string
            rackunit
            raco/testing

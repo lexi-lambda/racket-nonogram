@@ -34,7 +34,8 @@
   (λ ()
     (define end-time (current-inexact-monotonic-milliseconds))
     (define elapsed-millis (- end-time start-time))
-    (log-nonogram:timing-debug "[~a] finished in ~a ms" name (~r* elapsed-millis #:precision '(= 2)))))
+    (log-nonogram:timing-debug "[~a] finished in ~a ms" name (~r* elapsed-millis #:precision '(= 2)))
+    elapsed-millis))
 
 (define (time-pict p name)
   (define draw (make-pict-drawer p))
