@@ -65,6 +65,7 @@
           (struct line-clues ([type line-clues-type?]
                               [clues (or/c single-line-clues?
                                            mega-line-clues?)]))
+          [line-clues-span (-> line-clues? (or/c 1 2))]
           [axis-clues? flat-contract?]
           (struct board-clues ([row-clues axis-clues?]
                                [column-clues axis-clues?]))
@@ -274,8 +275,8 @@
      (array-map single-line-clues #((1) (3)))
      (array-map single-line-clues #(() (1) (2) (1))))))
 
-;; lines-clues-span : line-clues? -> (or/c 1 2)
-(define (lines-clues-span lc)
+;; line-clues-span : line-clues? -> (or/c 1 2)
+(define (line-clues-span lc)
   (match (line-clues-type lc)
     ['single 1]
     ['mega   2]))
@@ -283,7 +284,7 @@
 ;; axis-clues? -> natural?
 (define (axis-clues-line-count lcs)
   (for/sum ([lc (in-array lcs)])
-    (lines-clues-span lc)))
+    (line-clues-span lc)))
 
 ;; line-index->axis-clue-index
 ;;   : axis-clues? natural?

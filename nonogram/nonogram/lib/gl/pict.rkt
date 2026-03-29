@@ -69,9 +69,11 @@
           [rc-superimpose superimpose/c]
           [rb-superimpose superimpose/c]
 
-          [pin-over (->* [pict? pict? (or/c point? (-> pict? point?))]
-                         [#:hole (or/c point? pict-finder/c)]
-                         pict?)]
+          [pin (->* [pict? pict? (or/c point? (-> pict? point?))]
+                    [#:over? any/c
+                     #:hole (or/c point? pict-finder/c)
+                     #:extend? any/c]
+                    pict?)]
 
           [tf:child-to-parent (->* [pict? pict?] [#:fail failure-result/c] any)]
           [tf:parent-to-child (->* [pict? pict?] [#:fail failure-result/c] any)]
@@ -363,7 +365,10 @@
 
 ;; -----------------------------------------------------------------------------
 
-(define (pin-over base-p p posn-spec #:hole [hole-spec (point 0.0 0.0)])
+(define (pin base-p p posn-spec
+             #:over? [over? #t]
+             #:hole [hole-spec (point 0.0 0.0)]
+             #:extend? [extend-bb? #f])
   (define posn
     (match posn-spec
       [(? point?) posn-spec]
@@ -373,15 +378,38 @@
       [(? point?) hole-spec]
       [(? procedure?) (hole-spec p p)]))
 
-  (define tf (tf:translate (- (point-x posn) (point-x hole))
-                           (- (point-y posn) (point-y hole))))
+  (define dx (- (point-x posn) (point-x hole)))
+  (define dy (- (point-y posn) (point-y hole)))
 
-  (define draw1 (pict-draw base-p))
-  (define draw2 (transform-draw (pict-draw p) tf))
-  (pict (pict-width base-p)
-        (pict-height base-p)
+  (define (combine-draw draw1 draw2)
+    (if over?
         (λ (dc) (draw1 dc) (draw2 dc))
-        (list (cons base-p tf:identity) (cons p tf))))
+        (λ (dc) (draw2 dc) (draw1 dc))))
+
+  (cond
+    [extend-bb?
+     (define-values [dx1 dx2]
+       (if (< dx 0) (values (- dx) 0) (values 0 dx)))
+     (define-values [dy1 dy2]
+       (if (< dy 0) (values (- dy) 0) (values 0 dy)))
+
+     (define tf1 (tf:translate dx1 dy1))
+     (define tf2 (tf:translate dx2 dy2))
+     (define draw1 (transform-draw (pict-draw base-p) tf1))
+     (define draw2 (transform-draw (pict-draw p) tf2))
+
+     (pict (max (+ (pict-width base-p) dx1) (+ (pict-width p) dx2))
+           (max (+ (pict-height base-p) dy1) (+ (pict-height p) dy2))
+           (combine-draw draw1 draw2)
+           (list (cons base-p tf1) (cons p tf2)))]
+    [else
+     (define tf (tf:translate dx dy))
+     (define draw1 (pict-draw base-p))
+     (define draw2 (transform-draw (pict-draw p) tf))
+     (pict (pict-width base-p)
+           (pict-height base-p)
+           (combine-draw draw1 draw2)
+           (list (cons base-p tf:identity) (cons p tf)))]))
 
 ;; -----------------------------------------------------------------------------
 

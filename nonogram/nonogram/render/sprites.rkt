@@ -35,6 +35,7 @@
                                     gl:pict?))
           [clue (-> clue? #:color color? gl:pict?)]
           [mega-clue (-> axis? clue? #:color color? gl:pict?)]
+          [clue-underlay (-> axis? real? #:color color? gl:pict?)]
 
           [sprite-atlas (->* [] [#:scale (and/c exact-integer? (>=/c 2))] atlas?)]))
 
@@ -165,10 +166,10 @@
   (define grid
     (for/fold ([grid minor-grid])
               ([x (in-range GRID-MAJOR-INTERVAL width GRID-MAJOR-INTERVAL)])
-      (gl:pin-over grid major-v-line (point (* x TILE-SIZE) 0) #:hole gl:ct-find)))
+      (gl:pin grid major-v-line (point (* x TILE-SIZE) 0) #:hole gl:ct-find)))
   (for/fold ([grid grid])
             ([y (in-range GRID-MAJOR-INTERVAL height GRID-MAJOR-INTERVAL)])
-    (gl:pin-over grid major-h-line (point 0 (* y TILE-SIZE)) #:hole gl:lc-find)))
+    (gl:pin grid major-h-line (point 0 (* y TILE-SIZE)) #:hole gl:lc-find)))
 
 (define-values [sprite:border-corner/integral sprite:border-corner]
   (let ()
@@ -329,13 +330,36 @@
 
 ;; -----------------------------------------------------------------------------
 
+(define sprite:clue-underlay-cap
+  (~> (filled-rounded-rectangle (* CLUE-UNDERLAY-RADIUS 2)
+                                TILE-SIZE
+                                CLUE-UNDERLAY-RADIUS
+                                #:draw-border? #f)
+      (inset 0 0 (- CLUE-UNDERLAY-RADIUS) 0)
+      clip))
+
+(define (clue-underlay axis size #:color color)
+  (match axis
+    ['row
+     (~> (gl:ht-append (gl:sprite sprite:clue-underlay-cap #:color color)
+                       (gl:rectangle (+ (- size (pict-width sprite:clue-underlay-cap))
+                                        GRID-BORDER-WIDTH)
+                                     (pict-height sprite:clue-underlay-cap)
+                                     #:color color))
+         (gl:inset 0 0 (- (/ GRID-BORDER-WIDTH 2)) 0))]
+    ['column
+     (gl:rotate (clue-underlay 'row size #:color color) (turns -1/4))]))
+
+;; -----------------------------------------------------------------------------
+
 (define all-sprites
   (append (list sprite:cross
                 sprite:mark
                 sprite:minor-grid-tile
                 sprite:border-corner/integral
                 sprite:cursor-mask
-                sprite:mega-clue-corner-mask)
+                sprite:mega-clue-corner-mask
+                sprite:clue-underlay-cap)
           (map make-bounds-integral
                (hash-values sprites:glyphs #t))))
 
@@ -376,6 +400,16 @@
        bg-p
        (grid-lines bw bh)
        (grid-border bw bh))
-      (gl:pin-over (cursor 3) (tile-cc-find 1 2) #:hole gl:cc-find)
+      (gl:pin (apply gl:vr-append
+                     (for/list ([i (in-range bh)])
+                       (clue-underlay 'row 50 #:color (tile-empty-color i))))
+              (λ~> (gl:lb-find bg-p)) #:hole gl:rb-find
+              #:over? #f #:extend? #t)
+      (gl:pin (apply gl:hb-append
+                     (for/list ([i (in-range bw)])
+                       (clue-underlay 'column 50 #:color (tile-empty-color i))))
+              (λ~> (gl:rt-find bg-p)) #:hole gl:rb-find
+              #:over? #f #:extend? #t)
+      (gl:pin (cursor 3) (tile-cc-find 1 2) #:hole gl:cc-find)
       (gl:scale 4)
       (freeze #:scale 2)))
