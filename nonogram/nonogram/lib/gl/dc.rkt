@@ -41,11 +41,13 @@
           [link-gl-dc-program (-> program?)]
           [use-gl-dc-program! (->* [program?]
                                    [#:transform transformation?
+                                    #:alpha (real-in 0 1)
                                     #:hatch-divisions exact-integer?
                                     #:hatch-transform transformation?]
                                    void?)]
           [gl-dc-program-bind! (->* [program?]
                                     [#:transform (or/c transformation? #f)
+                                     #:alpha (or/c (real-in 0 1) #f)
                                      #:hatch-divisions (or/c exact-integer? #f)
                                      #:hatch-transform (or/c transformation? #f)]
                                     void?)]))
@@ -271,6 +273,7 @@
 
       flat in uint flags;
       in vec4 color;
+      uniform float alpha;
 
       uniform sampler2D tex;
       in vec2 tex_position;
@@ -306,6 +309,8 @@
             fragColor = colorAssoc * (1.0 - texture(tex, tex_position).a);
             break;
         }
+
+        fragColor *= alpha;
       }})
 
 (define (tf:hatch #:divisions divisions
@@ -325,26 +330,31 @@
             #:scale (/ scale (sqrt 2))))
 
 (define (link-gl-dc-program)
-  (link-program vs:dc fs:dc '(transform hatch_divisions hatch_index hatch_tf)))
+  (link-program vs:dc fs:dc '(transform alpha hatch_divisions hatch_index hatch_tf)))
 
 (define (use-gl-dc-program! prog
                             #:transform [tf tf:identity]
+                            #:alpha [alpha 1.0]
                             #:hatch-divisions [hatch-divisions 0]
                             #:hatch-transform [hatch-tf tf:identity])
   (use-program!
    prog
    (list glUniformMatrix3f/tf 'transform tf)
+   (list glUniform1f 'alpha (real->double-flonum alpha))
    (list glUniform1i 'hatch_divisions hatch-divisions)
    (list glUniformMatrix3f/tf 'hatch_tf hatch-tf)))
 
 (define (gl-dc-program-bind! prog
                              #:transform [tf #f]
+                             #:alpha [alpha #f]
                              #:hatch-divisions [hatch-divisions #f]
                              #:hatch-transform [hatch-tf #f])
   (apply program-bind! prog
          (append
           (when/list tf
             (list glUniformMatrix3f/tf 'transform tf))
+          (when/list alpha
+            (list glUniform1f 'alpha (real->double-flonum alpha)))
           (when/list hatch-divisions
             (list glUniform1i 'hatch_divisions hatch-divisions))
           (when/list hatch-tf

@@ -26,6 +26,7 @@
           [tf:tile-to-scene (-> gl:pict? gl:pict? transformation?)]
           [tf:scene-to-tile (-> gl:pict? gl:pict? transformation?)]
           [board-grid (-> natural? natural? gl:pict?)]
+          [board-border (-> natural? natural? gl:pict?)]
 
           [cursor (-> natural? gl:pict?)]
 
@@ -156,7 +157,7 @@
 
 (define minor-grid-tile (gl:sprite sprite:minor-grid-tile))
 
-(define (grid-lines width height)
+(define (board-grid width height)
   (define minor-row (apply gl:ht-append (make-list width minor-grid-tile)))
   (define minor-grid (apply gl:vl-append (make-list height minor-row)))
   (define major-h-line (gl:rectangle (* width TILE-SIZE) GRID-LINE-WIDTH
@@ -167,9 +168,10 @@
     (for/fold ([grid minor-grid])
               ([x (in-range GRID-MAJOR-INTERVAL width GRID-MAJOR-INTERVAL)])
       (gl:pin grid major-v-line (point (* x TILE-SIZE) 0) #:hole gl:ct-find)))
-  (for/fold ([grid grid])
-            ([y (in-range GRID-MAJOR-INTERVAL height GRID-MAJOR-INTERVAL)])
-    (gl:pin grid major-h-line (point 0 (* y TILE-SIZE)) #:hole gl:lc-find)))
+  (gl:launder
+   (for/fold ([grid grid])
+             ([y (in-range GRID-MAJOR-INTERVAL height GRID-MAJOR-INTERVAL)])
+     (gl:pin grid major-h-line (point 0 (* y TILE-SIZE)) #:hole gl:lc-find))))
 
 (define-values [sprite:border-corner/integral sprite:border-corner]
   (let ()
@@ -189,7 +191,7 @@
                 clip)
             corner-window)))
 
-(define (grid-border board-width board-height)
+(define (board-border board-width board-height)
   (define border-corner (gl:sprite sprite:border-corner))
   (define width (* board-width TILE-SIZE))
   (define height (* board-height TILE-SIZE))
@@ -203,14 +205,10 @@
     (gl:ht-append border-corner
                   h-line
                   (gl:rotate border-corner (turns -1/4))))
-  (gl:rc-superimpose
-   (gl:vl-append top-border v-line (gl:rotate top-border (turns 1/2)))
-   v-line))
-
-(define (board-grid width height)
   (gl:launder
-   (gl:cc-superimpose (grid-lines width height)
-                      (grid-border width height))))
+   (gl:rc-superimpose
+    (gl:vl-append top-border v-line (gl:rotate top-border (turns 1/2)))
+    v-line)))
 
 (define sprite:cursor-mask
   (let ()
@@ -398,8 +396,8 @@
 
   (~> (gl:cc-superimpose
        bg-p
-       (grid-lines bw bh)
-       (grid-border bw bh))
+       (board-grid bw bh)
+       (board-border bw bh))
       (gl:pin (apply gl:vr-append
                      (for/list ([i (in-range bh)])
                        (clue-underlay 'row 50 #:color (tile-empty-color i))))

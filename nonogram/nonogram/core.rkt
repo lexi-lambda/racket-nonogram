@@ -56,6 +56,7 @@
           [board-axis (-> board? axis? (arrayof tile-line?))]
           [lines->board (-> (arrayof tile-line?) axis? board?)]
           [board-clear (-> board? board?)]
+          [board-full? (-> board? boolean?)]
 
           [clue? flat-contract?]
           [single-line-clues? flat-contract?]
@@ -238,6 +239,14 @@
 ;; board-clear : board? -> board?
 (define (board-clear b)
   (make-board (board-width b) (board-height b)))
+
+;; board-full? : board? -> boolean?
+(define (board-full? b)
+  (for*/and ([row (in-array (board-rows b))]
+             [tile (in-array row)])
+    (match tile
+      [(or 'empty 'mark) #f]
+      [(or 'full 'cross) #t])))
 
 ;; -----------------------------------------------------------------------------
 ;; clues

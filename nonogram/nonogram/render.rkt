@@ -42,7 +42,7 @@
 ;; -----------------------------------------------------------------------------
 
 ;; render-tiles : board? -> pict?
-(define (render-tiles b)
+(define (render-tiles b #:only-full? [only-full? #f])
   (launder
    (for/fold ([rows-p (blank)])
              ([row (in-array (board-rows b))])
@@ -50,7 +50,12 @@
       rows-p
       (for/fold ([row-p (blank)])
                 ([cell (in-array row)])
-        (ht-append row-p (tile cell)))))))
+        (define tile-p
+          (if (or (not only-full?)
+                  (eq? cell 'full))
+              (tile cell)
+              blank-tile))
+        (ht-append row-p tile-p))))))
 
 ;; -----------------------------------------------------------------------------
 
@@ -220,6 +225,8 @@
 
 ;; -----------------------------------------------------------------------------
 
+(define PICTURE-ONLY-ANIM-SECONDS 0.35)
+
 ;; A transformation that places (0, 0) at the top left of the viewport and
 ;; (1, 1) at the bottom right.
 (define tf:base-view
@@ -290,6 +297,7 @@
     (define board-analysis -board-analysis)
     (define cursor-locations (hasheqv))
     (define show-fps? -show-fps?)
+    (define picture-only? #f)
 
     (define/public (set-puzzle! v)
       (call-with-state-lock
@@ -307,11 +315,16 @@
       (call-with-state-lock
        (λ () (set! show-fps? (and v #t)))))
 
+    (define/public (set-picture-only?! v)
+      (call-with-state-lock
+       (λ () (set! picture-only? (and v #t)))))
+
     ;; The following fields are updated at the start of each frame so that
     ;; concurrent state changes do not interfere with the render thread.
     (define frame-pz pz)
     (define frame-board-analysis board-analysis)
     (define frame-show-fps? show-fps?)
+    (define frame-board-solved? #f)
 
     (define frame-cursor-locations cursor-locations)
     (define grouped-cursor-locations (hash))
@@ -325,7 +338,15 @@
       (set! board-dirty? #t)
       (set! dirty? #t))
 
+    (define/private (update-board-solved?!)
+      (set! frame-board-solved?
+            (and frame-board-analysis
+                 (board-analysis-solved? frame-board-analysis)
+                 (board-full? (puzzle-board frame-pz)))))
+
     (define/private (update-frame-state!)
+      (define solved-dirty? #f)
+
       (define old-pz frame-pz)
       (cond
         [(not (equal? (puzzle-clues old-pz) (puzzle-clues pz)))
@@ -333,14 +354,20 @@
          (set! frame-board-analysis #f)
          (build-static-picts!)
          (create-layer-dcs!)
-         (set-board-dirty!)]
+         (set-board-dirty!)
+         (set! solved-dirty? #t)]
         [(not (equal? (puzzle-board old-pz) (puzzle-board pz)))
          (set! frame-pz pz)
-         (set-board-dirty!)])
+         (set-board-dirty!)
+         (set! solved-dirty? #t)])
 
       (unless (equal? frame-board-analysis board-analysis)
         (set! frame-board-analysis board-analysis)
-        (set-board-dirty!))
+        (set-board-dirty!)
+        (set! solved-dirty? #t))
+
+      (when solved-dirty?
+        (update-board-solved?!))
 
       (unless (equal? frame-cursor-locations cursor-locations)
         (set! frame-cursor-locations cursor-locations)
@@ -364,6 +391,19 @@
         (set! frame-show-fps? show-fps?)
         (set! dirty? #t)))
 
+    (define frame-picture-only-fac 0.0)
+
+    (define/private (update-animation-state! elapsed-secs)
+      (define picture-only?* (or picture-only? frame-board-solved?))
+      (define target-picture-only-fac (if picture-only?* 1.0 0.0))
+      (unless (= frame-picture-only-fac target-picture-only-fac)
+        (define advance-fac (/ elapsed-secs PICTURE-ONLY-ANIM-SECONDS))
+        (set! frame-picture-only-fac
+              (if picture-only?*
+                  (min 1.0 (+ frame-picture-only-fac advance-fac))
+                  (max 0.0 (- frame-picture-only-fac advance-fac))))
+        (set! dirty? #t)))
+
     ;; -------------------------------------------------------------------------
     ;; atlas
 
@@ -380,18 +420,22 @@
 
     (define board-bg-p #f)
     (define board-grid-p #f)
+    (define board-border-p #f)
 
     (define/private (build-static-picts!)
       (define board-w (board-width (puzzle-board frame-pz)))
       (define board-h (board-height (puzzle-board frame-pz)))
       (set! board-bg-p (board-background board-w board-h))
-      (set! board-grid-p (board-grid board-w board-h)))
+      (set! board-grid-p (board-grid board-w board-h))
+      (set! board-border-p (board-border board-w board-h)))
 
     (build-static-picts!)
 
     (define board-bg-dc #f)
     (define board-dc #f)
     (define board-grid-dc #f)
+    (define board-border-dc #f)
+    (define picture-only-dc #f)
     (define stream-dc #f)
 
     (define/private (create-layer-dcs!)
@@ -409,7 +453,9 @@
 
          (set! board-bg-dc (make-static board-bg-p))
          (set! board-grid-dc (make-static board-grid-p))
+         (set! board-border-dc (make-static board-border-p))
          (set! board-dc (make-one #:usage GL_DYNAMIC_DRAW))
+         (set! picture-only-dc (make-one #:usage GL_DYNAMIC_DRAW))
          (set! stream-dc (make-one)))))
 
     ;; -------------------------------------------------------------------------
@@ -428,7 +474,8 @@
     ;; -------------------------------------------------------------------------
     ;; render
 
-    (define last-frame-ms #f)
+    (define last-frame-start-ms #f)
+    (define last-frame-end-ms #f)
     (define frame-ms #f)
 
     (define/private (fps-overlay)
@@ -444,14 +491,23 @@
       (vr-append (scale fps-p 1.25) frame-ms-p))
 
     (define board-p #f)
+    (define tiles-p #f)
+    (define full-tiles-p #f)
     (define row-clues-p #f)
     (define column-clues-p #f)
 
     (define/public (render!)
+      (define this-start-ms (current-inexact-monotonic-milliseconds))
+      (define elapsed-secs (and last-frame-start-ms
+                                (/ (- this-start-ms last-frame-start-ms) 1000.0)))
+      (set! last-frame-start-ms this-start-ms)
+
       (call-with-state-lock
        (λ ()
          (update-viewport!)
-         (update-frame-state!)))
+         (update-frame-state!)
+         (when elapsed-secs
+           (update-animation-state! elapsed-secs))))
 
       (when (or dirty? frame-show-fps?)
         (call-with-gl-context
@@ -460,7 +516,8 @@
              ;; assemble board and clues
              (define clues (puzzle-clues frame-pz))
              (when board-dirty?
-               (define tiles-p (render-tiles (puzzle-board frame-pz)))
+               (set! tiles-p (render-tiles (puzzle-board frame-pz)))
+               (set! full-tiles-p (render-tiles (puzzle-board frame-pz) #:only-full? #t))
                (set! row-clues-p
                      (render-axis-clues 'row
                                         (board-clues-row-clues clues)
@@ -472,7 +529,8 @@
                (set! board-p
                      (~> (cc-superimpose (ghost board-bg-p)
                                          tiles-p
-                                         (ghost board-grid-p))
+                                         (ghost board-grid-p)
+                                         (ghost board-border-p))
                          (pin row-clues-p (λ~> (lt-find board-bg-p)) #:hole rt-find #:extend? #t)
                          (pin column-clues-p (λ~> (lt-find board-bg-p)) #:hole lb-find #:extend? #t))))
 
@@ -506,6 +564,15 @@
              (unless (and atlas-scale (= atlas-scale target-atlas-scale))
                (pack-atlas! #:scale target-atlas-scale)
                (create-layer-dcs!))
+
+             ;; assemble picture-only scene
+             (define picture-only-alpha frame-picture-only-fac)
+             (define picture-only-scene-p
+               (~> (ghost scene-p)
+                   (pin (lt-superimpose
+                         (rectangle (pict-width tiles-p) (pict-height tiles-p) #:color "white")
+                         full-tiles-p)
+                        (λ~> (lt-find tiles-p)))))
 
              ;; assemble underlays
              (define (build-underlays-p #:rows [rows-p #f] #:columns [columns-p #f])
@@ -549,7 +616,9 @@
              ;; upload vertex data
              (when board-dirty?
                (gl-dc-clear! board-dc)
-               ((pict-draw centered-scene-p) board-dc))
+               ((pict-draw centered-scene-p) board-dc)
+               (gl-dc-clear! picture-only-dc)
+               ((pict-draw picture-only-scene-p) picture-only-dc))
              (gl-dc-clear! stream-dc)
              ((pict-draw solid-underlays-p) stream-dc)
 
@@ -595,6 +664,16 @@
              (bind-transform! board-grid-p)
              (gl-dc-draw board-grid-dc)
 
+             ;; draw picture-only scene
+             (unless (zero? picture-only-alpha)
+               (bind-transform! scene-p)
+               (gl-dc-program-bind! prog:dc #:alpha picture-only-alpha)
+               (gl-dc-draw picture-only-dc)
+               (gl-dc-program-bind! prog:dc #:alpha 1.0))
+
+             (bind-transform! board-border-p)
+             (gl-dc-draw board-border-dc)
+
              ;; draw overlays
              (gl-dc-clear! stream-dc)
              ((pict-draw overlay-p) stream-dc)
@@ -623,10 +702,10 @@
              (set! board-dirty? #f)
              (set! dirty? #f)))))
 
-      (define now-ms (current-inexact-monotonic-milliseconds))
-      (when last-frame-ms
-        (define this-frame-ms (- now-ms last-frame-ms))
+      (define this-end-ms (current-inexact-monotonic-milliseconds))
+      (when last-frame-end-ms
+        (define this-frame-ms (- this-end-ms last-frame-end-ms))
         (set! frame-ms (if frame-ms
                            (+ (* frame-ms 0.99) (* this-frame-ms 0.01))
                            this-frame-ms)))
-      (set! last-frame-ms now-ms))))
+      (set! last-frame-end-ms this-end-ms))))
