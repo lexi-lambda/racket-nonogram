@@ -27,10 +27,10 @@
          (contract-out
           [puzzle-renderer%
            (class/c
-            (init-field [gl-context (is-a?/c gl-context<%>)]
-                        [puzzle puzzle?]
-                        [board-analysis (or/c board-analysis? #f)]
-                        [show-fps? boolean?])
+            (init [gl-context (is-a?/c gl-context<%>)]
+                  [puzzle puzzle?]
+                  [board-analysis (or/c board-analysis? #f)]
+                  [show-fps? boolean?])
             [set-size! (->m exact-positive-integer? exact-positive-integer? void?)]
             [set-puzzle! (->m puzzle? void?)]
             [set-board-analysis! (->m (or/c board-analysis? #f) void?)]
@@ -228,19 +228,18 @@
 
 (define puzzle-renderer%
   (class object%
-    (init-field gl-context
-                [{pz puzzle}]
-                [board-analysis #f]
-                [show-fps? #f])
-
-    (define cursor-locations (hasheqv))
-    (define grouped-cursor-locations (hash))
-    (define cursor-rows (hasheqv))
-    (define cursor-columns (hasheqv))
-
+    (init [{-gl-context gl-context}]
+          [{-pz puzzle}]
+          [{-board-analysis board-analysis} #f]
+          [{-show-fps? show-fps?} #f])
     (super-new)
+    (define gl-context -gl-context)
 
-    (define/private (with-gl-context thunk)
+    (define state-lock (make-semaphore 1))
+    (define/private (call-with-state-lock thunk)
+      (call-with-semaphore state-lock thunk))
+
+    (define/private (call-with-gl-context thunk)
       ; work around racket/draw#60
       (if (get-current-gl-context)
           (thunk)
@@ -249,7 +248,7 @@
       (send gl-context swap-buffers))
 
     (define-values [prog:dc atlas-texture]
-      (with-gl-context
+      (call-with-gl-context
        (λ ()
          (glEnable GL_MULTISAMPLE)
          (glClearColor 1.0 1.0 1.0 1.0)
@@ -259,18 +258,111 @@
     ;; -------------------------------------------------------------------------
     ;; viewport
 
+    (define viewport-dirty? #f)
+    (define viewport-width 100)
+    (define viewport-height 100)
+
+    (define/public (set-size! width height)
+      (call-with-state-lock
+       (λ ()
+         (set! viewport-width width)
+         (set! viewport-height height)
+         (set! viewport-dirty? #t))))
+
     (define tf:view tf:base-view)
     (define viewport-p (blank 1.0 1.0))
 
-    (define/public (set-size! width height)
-      (define width.0 (->fl width))
-      (define height.0 (->fl height))
-      (set! tf:view (tf* tf:base-view
-                         (tf:scale (/ width.0) (/ height.0))))
-      (set! viewport-p (blank width.0 height.0))
-      (with-gl-context
-       (λ () (glViewport 0 0 width height)))
-      (set-board-dirty!))
+    (define/private (update-viewport!)
+      (when viewport-dirty?
+        (define width.0 (->fl viewport-width))
+        (define height.0 (->fl viewport-height))
+        (set! tf:view (tf* tf:base-view
+                           (tf:scale (/ width.0) (/ height.0))))
+        (set! viewport-p (blank width.0 height.0))
+        (call-with-gl-context
+         (λ () (glViewport 0 0 viewport-width viewport-height)))
+        (set-board-dirty!)))
+
+    ;; -------------------------------------------------------------------------
+    ;; state updates
+
+    (define pz -pz)
+    (define board-analysis -board-analysis)
+    (define cursor-locations (hasheqv))
+    (define show-fps? -show-fps?)
+
+    (define/public (set-puzzle! v)
+      (call-with-state-lock
+       (λ () (set! pz v))))
+
+    (define/public (set-board-analysis! v)
+      (call-with-state-lock
+       (λ () (set! board-analysis v))))
+
+    (define/public (set-cursor-locations! v)
+      (call-with-state-lock
+       (λ () (set! cursor-locations v))))
+
+    (define/public (set-show-fps?! v)
+      (call-with-state-lock
+       (λ () (set! show-fps? (and v #t)))))
+
+    ;; The following fields are updated at the start of each frame so that
+    ;; concurrent state changes do not interfere with the render thread.
+    (define frame-pz pz)
+    (define frame-board-analysis board-analysis)
+    (define frame-show-fps? show-fps?)
+
+    (define frame-cursor-locations cursor-locations)
+    (define grouped-cursor-locations (hash))
+    (define cursor-rows (hasheqv))
+    (define cursor-columns (hasheqv))
+
+    (define dirty? #t)
+    (define board-dirty? #t)
+
+    (define/private (set-board-dirty!)
+      (set! board-dirty? #t)
+      (set! dirty? #t))
+
+    (define/private (update-frame-state!)
+      (define old-pz frame-pz)
+      (cond
+        [(not (equal? (puzzle-clues old-pz) (puzzle-clues pz)))
+         (set! frame-pz pz)
+         (set! frame-board-analysis #f)
+         (build-static-picts!)
+         (create-layer-dcs!)
+         (set-board-dirty!)]
+        [(not (equal? (puzzle-board old-pz) (puzzle-board pz)))
+         (set! frame-pz pz)
+         (set-board-dirty!)])
+
+      (unless (equal? frame-board-analysis board-analysis)
+        (set! frame-board-analysis board-analysis)
+        (set-board-dirty!))
+
+      (unless (equal? frame-cursor-locations cursor-locations)
+        (set! frame-cursor-locations cursor-locations)
+        ;; Invert mapping from `client-id => location` to `location => (listof client-id)`
+        ;; to allow rendering overlapping cursors specially. Also, accumulate mappings
+        ;; from row/column indexes to cursors for highlighting selected clue lines.
+        (set!-values
+         [grouped-cursor-locations cursor-rows cursor-columns]
+         (for/foldr ([grouped-locations (hash)]
+                     [cursor-rows (hasheqv)]
+                     [cursor-columns (hasheqv)])
+                    ([client-id+location (in-list (hash->list cursor-locations #t))])
+           (match-define (cons client-id location) client-id+location)
+           (define add-id (λ~> (cons client-id _)))
+           (values (hash-update grouped-locations location add-id '())
+                   (hash-update cursor-rows (point-y location) add-id '())
+                   (hash-update cursor-columns (point-x location) add-id '()))))
+        (set! dirty? #t))
+
+      (when (not (eq? frame-show-fps? show-fps?))
+        (set! frame-show-fps? show-fps?)
+        (set! dirty? #t)))
 
     ;; -------------------------------------------------------------------------
     ;; atlas
@@ -290,8 +382,8 @@
     (define board-grid-p #f)
 
     (define/private (build-static-picts!)
-      (define board-w (board-width (puzzle-board pz)))
-      (define board-h (board-height (puzzle-board pz)))
+      (define board-w (board-width (puzzle-board frame-pz)))
+      (define board-h (board-height (puzzle-board frame-pz)))
       (set! board-bg-p (board-background board-w board-h))
       (set! board-grid-p (board-grid board-w board-h)))
 
@@ -303,7 +395,7 @@
     (define stream-dc #f)
 
     (define/private (create-layer-dcs!)
-      (with-gl-context
+      (call-with-gl-context
        (λ ()
          (define (make-one #:usage [buffer-usage GL_STREAM_DRAW])
            (make-gl-dc #:atlas atlas
@@ -321,60 +413,6 @@
          (set! stream-dc (make-one)))))
 
     ;; -------------------------------------------------------------------------
-    ;; state updates
-
-    (define dirty? #t)
-    (define board-p #f)
-    (define row-clues-p #f)
-    (define column-clues-p #f)
-
-    (define/private (set-board-dirty!)
-      (set! board-p #f)
-      (set! row-clues-p #f)
-      (set! column-clues-p #f)
-      (set! dirty? #t))
-
-    (define/public (set-puzzle! new-pz)
-      (define old-pz pz)
-      (set! pz new-pz)
-      (cond
-        [(not (equal? (puzzle-clues old-pz) (puzzle-clues new-pz)))
-         (set! board-analysis #f)
-         (build-static-picts!)
-         (create-layer-dcs!)
-         (set-board-dirty!)]
-        [(not (equal? (puzzle-board old-pz) (puzzle-board new-pz)))
-         (set-board-dirty!)]))
-
-    (define/public (set-board-analysis! new-analysis)
-      (unless (equal? board-analysis new-analysis)
-        (set! board-analysis new-analysis)
-        (set-board-dirty!)))
-
-    (define/public (set-cursor-locations! new-locations)
-      (unless (equal? cursor-locations new-locations)
-        (set! cursor-locations new-locations)
-        ;; Invert mapping from `client-id => location` to `location => (listof client-id)`
-        ;; to allow rendering overlapping cursors specially. Also, accumulate mappings
-        ;; from row/column indexes to cursors for highlighting selected clue lines.
-        (set!-values
-         [grouped-cursor-locations cursor-rows cursor-columns]
-         (for/foldr ([grouped-locations (hash)]
-                     [cursor-rows (hasheqv)]
-                     [cursor-columns (hasheqv)])
-                    ([client-id+location (in-list (hash->list new-locations #t))])
-           (match-define (cons client-id location) client-id+location)
-           (define add-id (λ~> (cons client-id _)))
-           (values (hash-update grouped-locations location add-id '())
-                   (hash-update cursor-rows (point-y location) add-id '())
-                   (hash-update cursor-columns (point-x location) add-id '()))))
-        (set! dirty? #t)))
-
-    (define/public (set-show-fps?! new-show-fps?)
-      (set! show-fps? (and new-show-fps? #t))
-      (set! dirty? #t))
-
-    ;; -------------------------------------------------------------------------
     ;; coordinate mapping
 
     (define tf:viewport-to-tile tf:identity)
@@ -382,7 +420,7 @@
     (define/public (get-tile-at loc)
       (define tile-loc (floor-point (tf* tf:viewport-to-tile loc)))
       (match-define (point tx ty) tile-loc)
-      (define brd (puzzle-board pz))
+      (define brd (puzzle-board frame-pz))
       (and (>= tx 0) (< tx (board-width brd))
            (>= ty 0) (< ty (board-height brd))
            tile-loc))
@@ -405,25 +443,32 @@
 
       (vr-append (scale fps-p 1.25) frame-ms-p))
 
+    (define board-p #f)
+    (define row-clues-p #f)
+    (define column-clues-p #f)
+
     (define/public (render!)
-      (when (or dirty? show-fps?)
-        (set! dirty? #f)
-        (with-gl-context
+      (call-with-state-lock
+       (λ ()
+         (update-viewport!)
+         (update-frame-state!)))
+
+      (when (or dirty? frame-show-fps?)
+        (call-with-gl-context
          (λ ()
            (when (= (glCheckFramebufferStatus GL_DRAW_FRAMEBUFFER) GL_FRAMEBUFFER_COMPLETE)
              ;; assemble board and clues
-             (define board-dirty? (not board-p))
-             (define clues (puzzle-clues pz))
+             (define clues (puzzle-clues frame-pz))
              (when board-dirty?
-               (define tiles-p (render-tiles (puzzle-board pz)))
+               (define tiles-p (render-tiles (puzzle-board frame-pz)))
                (set! row-clues-p
                      (render-axis-clues 'row
                                         (board-clues-row-clues clues)
-                                        (and~> board-analysis board-analysis-row-analysis)))
+                                        (and~> frame-board-analysis board-analysis-row-analysis)))
                (set! column-clues-p
                      (render-axis-clues 'column
                                         (board-clues-column-clues clues)
-                                        (and~> board-analysis board-analysis-column-analysis)))
+                                        (and~> frame-board-analysis board-analysis-column-analysis)))
                (set! board-p
                      (~> (cc-superimpose (ghost board-bg-p)
                                          tiles-p
@@ -497,7 +542,7 @@
                                    hatched-cursors)))))
              (define overlay-p
                (~> plain-cursors-p
-                   (when~> show-fps?
+                   (when~> frame-show-fps?
                      (pin (scale (fps-overlay) 2)
                           rt-find #:hole rt-find))))
 
@@ -573,7 +618,10 @@
                                                    #:scale (/ CURSOR-STRIPES (pict-width cursor-p))))
                  (gl-dc-draw stream-dc)))
 
-             (swap-gl-buffers)))))
+             (swap-gl-buffers)
+
+             (set! board-dirty? #f)
+             (set! dirty? #f)))))
 
       (define now-ms (current-inexact-monotonic-milliseconds))
       (when last-frame-ms
