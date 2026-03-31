@@ -83,7 +83,8 @@
       (when~> margin-after?
         (cond~>
           [row? (inset 0 0 MEGA-CLUE-MARGIN 0)]
-          [else (inset 0 0 0 MEGA-CLUE-MARGIN)]))))
+          [else (inset 0 0 0 MEGA-CLUE-MARGIN)]))
+      launder))
 
 ;; render-line-clues/single : axis? single-line-clues? (or/c single-line-analysis? #f) -> pict?
 (define (render-line-clues/single axis line-clues [line-analysis #f]
@@ -95,13 +96,14 @@
                              (in-list line-analysis)
                              (in-cycle (list line-analysis)))])
       (render-clue/single clue analysis)))
-  (match axis
-    ['row    (~> (hc-append (apply hc-append clue-picts #:gap CLUE-GAP)
-                            (blank 0 TILE-SIZE))
-                 (inset (if margin-before? CLUE-BOARD-GAP 0) 0
-                        (if margin-after? CLUE-BOARD-GAP 0) 0))]
-    ['column (vc-append (apply vc-append clue-picts)
-                        (blank TILE-SIZE 0))]))
+  (launder
+   (match axis
+     ['row    (~> (hc-append (apply hc-append clue-picts #:gap CLUE-GAP)
+                             (blank 0 TILE-SIZE))
+                  (inset (if margin-before? CLUE-BOARD-GAP 0) 0
+                         (if margin-after? CLUE-BOARD-GAP 0) 0))]
+     ['column (vc-append (apply vc-append clue-picts)
+                         (blank TILE-SIZE 0))])))
 
 ;; render-line-clues/mega : axis? mega-line-clues? (or/c mega-line-analysis? #f) -> pict?
 (define (render-line-clues/mega axis line-clues-lst [line-analysis #f])
@@ -137,12 +139,12 @@
           #:margin-after? (or at-end?
                               (and (eq? axis 'column)
                                    (clue? (array-ref line-clues (add1 i))))))])))
-
-  (match axis
-    ['row    (hc-append (apply hc-append chunk-picts #:gap MEGA-CLUE-GAP)
-                        (blank 0 (* TILE-SIZE 2)))]
-    ['column (vc-append (apply vc-append chunk-picts)
-                        (blank (* TILE-SIZE 2) 0))]))
+  (launder
+   (match axis
+     ['row    (hc-append (apply hc-append chunk-picts #:gap MEGA-CLUE-GAP)
+                         (blank 0 (* TILE-SIZE 2)))]
+     ['column (vc-append (apply vc-append chunk-picts)
+                         (blank (* TILE-SIZE 2) 0))])))
 
 ;; render-line-clues : axis? line-clues? (or/c line-clue-analysis? #f) -> pict?
 (define (render-line-clues axis clues [line-analysis #f])
@@ -214,7 +216,7 @@
     (define solid-p-loc (lt-find underlays-p* solid-p))
 
     (values (+ i (line-clues-span clues))
-            underlays-p*
+            (launder underlays-p*)
             (for/fold ([hatched-underlays-ps hatched-underlays-ps])
                       ([hatched-p (in-list hatched-ps)]
                        [i (in-naturals 1)])
@@ -288,7 +290,8 @@
         (set! viewport-p (blank width.0 height.0))
         (call-with-gl-context
          (λ () (glViewport 0 0 viewport-width viewport-height)))
-        (set-board-dirty!)))
+        (set-board-dirty!)
+        (set! viewport-dirty? #f)))
 
     ;; -------------------------------------------------------------------------
     ;; state updates
@@ -333,9 +336,13 @@
 
     (define dirty? #t)
     (define board-dirty? #t)
+    (define cursors-dirty? #t)
 
     (define/private (set-board-dirty!)
       (set! board-dirty? #t)
+      (set-cursors-dirty!))
+    (define/private (set-cursors-dirty!)
+      (set! cursors-dirty? #t)
       (set! dirty? #t))
 
     (define/private (update-board-solved?!)
@@ -385,7 +392,7 @@
            (values (hash-update grouped-locations location add-id '())
                    (hash-update cursor-rows (point-y location) add-id '())
                    (hash-update cursor-columns (point-x location) add-id '()))))
-        (set! dirty? #t))
+        (set-cursors-dirty!))
 
       (when (not (eq? frame-show-fps? show-fps?))
         (set! frame-show-fps? show-fps?)
@@ -431,6 +438,7 @@
 
     (build-static-picts!)
 
+    (define clue-underlays-dc #f)
     (define board-bg-dc #f)
     (define board-dc #f)
     (define board-grid-dc #f)
@@ -454,6 +462,7 @@
          (set! board-bg-dc (make-static board-bg-p))
          (set! board-grid-dc (make-static board-grid-p))
          (set! board-border-dc (make-static board-border-p))
+         (set! clue-underlays-dc (make-one #:usage GL_DYNAMIC_DRAW))
          (set! board-dc (make-one #:usage GL_DYNAMIC_DRAW))
          (set! picture-only-dc (make-one #:usage GL_DYNAMIC_DRAW))
          (set! stream-dc (make-one)))))
@@ -496,6 +505,11 @@
     (define row-clues-p #f)
     (define column-clues-p #f)
 
+    (define row-underlays-p #f)
+    (define row-hatched-underlays-ps #f)
+    (define column-underlays-p #f)
+    (define column-hatched-underlays-ps #f)
+
     (define/public (render!)
       (define this-start-ms (current-inexact-monotonic-milliseconds))
       (define elapsed-secs (and last-frame-start-ms
@@ -519,32 +533,32 @@
                (set! tiles-p (render-tiles (puzzle-board frame-pz)))
                (set! full-tiles-p (render-tiles (puzzle-board frame-pz) #:only-full? #t))
                (set! row-clues-p
-                     (render-axis-clues 'row
-                                        (board-clues-row-clues clues)
-                                        (and~> frame-board-analysis board-analysis-row-analysis)))
+                 (render-axis-clues 'row
+                                    (board-clues-row-clues clues)
+                                    (and~> frame-board-analysis board-analysis-row-analysis)))
                (set! column-clues-p
-                     (render-axis-clues 'column
-                                        (board-clues-column-clues clues)
-                                        (and~> frame-board-analysis board-analysis-column-analysis)))
+                 (render-axis-clues 'column
+                                    (board-clues-column-clues clues)
+                                    (and~> frame-board-analysis board-analysis-column-analysis)))
                (set! board-p
-                     (~> (cc-superimpose (ghost board-bg-p)
-                                         tiles-p
-                                         (ghost board-grid-p)
-                                         (ghost board-border-p))
-                         (pin row-clues-p (λ~> (lt-find board-bg-p)) #:hole rt-find #:extend? #t)
-                         (pin column-clues-p (λ~> (lt-find board-bg-p)) #:hole lb-find #:extend? #t))))
+                 (~> (cc-superimpose (ghost board-bg-p)
+                                     tiles-p
+                                     (ghost board-grid-p)
+                                     (ghost board-border-p))
+                     (pin row-clues-p (λ~> (lt-find board-bg-p)) #:hole rt-find #:extend? #t)
+                     (pin column-clues-p (λ~> (lt-find board-bg-p)) #:hole lb-find #:extend? #t))))
 
-             (define-values [row-underlays-p row-hatched-underlays-ps]
-               (render-axis-clue-underlays 'row
-                                           (board-clues-row-clues clues)
-                                           row-clues-p
-                                           #:cursor-lines cursor-rows))
-             (define-values [column-underlays-p column-hatched-underlays-ps]
-               (render-axis-clue-underlays 'column
-                                           (board-clues-column-clues clues)
-                                           column-clues-p
-                                           #:cursor-lines cursor-columns))
-
+             (when cursors-dirty?
+               (set!-values [row-underlays-p row-hatched-underlays-ps]
+                 (render-axis-clue-underlays 'row
+                                             (board-clues-row-clues clues)
+                                             row-clues-p
+                                             #:cursor-lines cursor-rows))
+               (set!-values [column-underlays-p column-hatched-underlays-ps]
+                 (render-axis-clue-underlays 'column
+                                             (board-clues-column-clues clues)
+                                             column-clues-p
+                                             #:cursor-lines cursor-columns)))
              ;; assemble scene
              (define scene-p
                (~> board-p
@@ -619,8 +633,9 @@
                ((pict-draw centered-scene-p) board-dc)
                (gl-dc-clear! picture-only-dc)
                ((pict-draw picture-only-scene-p) picture-only-dc))
-             (gl-dc-clear! stream-dc)
-             ((pict-draw solid-underlays-p) stream-dc)
+             (when cursors-dirty?
+               (gl-dc-clear! clue-underlays-dc)
+               ((pict-draw solid-underlays-p) clue-underlays-dc))
 
              ;; draw
              (glClear GL_COLOR_BUFFER_BIT)
@@ -635,7 +650,7 @@
 
              ;; draw underlays
              (bind-transform! scene-p)
-             (gl-dc-draw stream-dc)
+             (gl-dc-draw clue-underlays-dc)
 
              (define (draw-hatched-underlays hatched-lines-ps build-p)
                (for ([(divisions+index lines-p) (in-immutable-hash hatched-lines-ps)])
@@ -700,6 +715,7 @@
              (swap-gl-buffers)
 
              (set! board-dirty? #f)
+             (set! cursors-dirty? #f)
              (set! dirty? #f)))))
 
       (define this-end-ms (current-inexact-monotonic-milliseconds))

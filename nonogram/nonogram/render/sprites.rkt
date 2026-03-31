@@ -337,16 +337,17 @@
       clip))
 
 (define (clue-underlay axis size #:color color)
-  (match axis
-    ['row
-     (~> (gl:ht-append (gl:sprite sprite:clue-underlay-cap #:color color)
-                       (gl:rectangle (+ (- size (pict-width sprite:clue-underlay-cap))
-                                        GRID-BORDER-WIDTH)
-                                     (pict-height sprite:clue-underlay-cap)
-                                     #:color color))
-         (gl:inset 0 0 (- (/ GRID-BORDER-WIDTH 2)) 0))]
-    ['column
-     (gl:rotate (clue-underlay 'row size #:color color) (turns -1/4))]))
+  (gl:launder
+   (match axis
+     ['row
+      (~> (gl:ht-append (gl:sprite sprite:clue-underlay-cap #:color color)
+                        (gl:rectangle (+ (- size (pict-width sprite:clue-underlay-cap))
+                                         GRID-BORDER-WIDTH)
+                                      (pict-height sprite:clue-underlay-cap)
+                                      #:color color))
+          (gl:inset 0 0 (- (/ GRID-BORDER-WIDTH 2)) 0))]
+     ['column
+      (gl:rotate (clue-underlay 'row size #:color color) (turns -1/4))])))
 
 ;; -----------------------------------------------------------------------------
 

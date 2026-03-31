@@ -295,22 +295,30 @@
   (transformation (/ yy d) (- (/ yx d)) (/ a d)
                   (- (/ xy d)) (/ xx d) (/ b d)))
 
-(define (tf* . ts0)
-  (match-define (cons t ts) (reverse ts0))
-  (for/fold ([t2 t])
-            ([t1 (in-list ts)])
-    (match-define (transformation xx1 yx1 x01 xy1 yy1 y01) t1)
-    (match t2
-      [(point x2 y2)
-       (point (+ (* xx1 x2) (* yx1 y2) x01)
-              (+ (* xy1 x2) (* yy1 y2) y01))]
-      [(transformation xx2 yx2 x02 xy2 yy2 y02)
-       (transformation (+ (* xx1 xx2) (* yx1 xy2))
-                       (+ (* xx1 yx2) (* yx1 yy2))
-                       (+ (* xx1 x02) (* yx1 y02) x01)
-                       (+ (* xy1 xx2) (* yy1 xy2))
-                       (+ (* xy1 yx2) (* yy1 yy2))
-                       (+ (* xy1 x02) (* yy1 y02) y01))])))
+(define tf*
+  (case-lambda
+    [() tf:identity]
+    [(t) t]
+    [(t1 t2)
+     (match-define (transformation xx1 yx1 x01 xy1 yy1 y01) t1)
+     (match t2
+       [(point x2 y2)
+        (point (+ (* xx1 x2) (* yx1 y2) x01)
+               (+ (* xy1 x2) (* yy1 y2) y01))]
+       [(transformation xx2 yx2 x02 xy2 yy2 y02)
+        (transformation (+ (* xx1 xx2) (* yx1 xy2))
+                        (+ (* xx1 yx2) (* yx1 yy2))
+                        (+ (* xx1 x02) (* yx1 y02) x01)
+                        (+ (* xy1 xx2) (* yy1 xy2))
+                        (+ (* xy1 yx2) (* yy1 yy2))
+                        (+ (* xy1 x02) (* yy1 y02) y01))])]
+    [(t1 t2 t3)
+     (tf* t1 (tf* t2 t3))]
+    [ts0
+     (match-define (cons t ts) (reverse ts0))
+     (for/fold ([t2 t])
+               ([t1 (in-list ts)])
+       (tf* t1 t2))]))
 
 (define (tf:world-to-child world child)
   (define-values [x1 y1] (lt-find world child))

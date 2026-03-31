@@ -150,8 +150,7 @@
                   (gl-dc-float-data dc)
                   buffer-usage)
 
-    (set-gl-dc-dirty?! dc #f)
-    #;(printf "vertices: ~v (~v bytes)\n" vertex-count (* vertex-count (+ float-data-stride/bytes 1))))
+    (set-gl-dc-dirty?! dc #f))
 
   (glDrawArrays GL_TRIANGLES 0 vertex-count))
 
