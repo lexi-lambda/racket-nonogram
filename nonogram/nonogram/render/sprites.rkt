@@ -52,7 +52,7 @@
               #:tight? [tight? #f]
               #:color [color "black"]
               #:pen [pen (make-pen #:style 'transparent)]
-              #:brush [brush (make-brush #:color color)])
+              #:brush [brush (make-brush #:color (->color% color))])
   (define-values [x y w h] (send p get-bounding-box))
   (define dx (if tight? (- x) 0))
   (define dy (if tight? (- y) 0))
@@ -195,7 +195,7 @@
          (filled-rounded-rectangle BOTTOM-WIDTH
                                    BOTTOM-HEIGHT
                                    1
-                                   #:color TILE-ERROR-MARK-COLOR
+                                   #:color (->color% TILE-ERROR-MARK-COLOR)
                                    #:draw-border? #f))
         (inset 1))))
 
@@ -488,13 +488,12 @@
       (scale 4)
       (freeze #:scale 2))
 
-  (~> (vl-append (text "21" CLUE-FONT)
-                 (clue 21 #:color (->rgb CLUE-DONE-COLOR))
+  (~> (vl-append (clue 21 #:color CLUE-PENDING-COLOR)
                  (~> (for/list ([i (in-inclusive-range 2 10)])
-                       (mega-clue 'row i #:color (->rgb CLUE-PENDING-COLOR)))
+                       (mega-clue 'row i #:color CLUE-PENDING-COLOR))
                      (apply gl:hb-append _ #:gap 1))
                  (~> (for/list ([i (in-inclusive-range 2 10)])
-                       (mega-clue 'column i #:color (->rgb CLUE-ERROR-COLOR)))
+                       (mega-clue 'column i #:color CLUE-ERROR-COLOR))
                      (apply gl:hb-append _ #:gap 1)))
       (scale 2)
       (freeze #:scale 2))

@@ -13,12 +13,12 @@
   (require rackunit))
 
 (provide (maybe-contract-out
-          [analyze-line (-> single-line-clues? tile-line? line-clue-analysis?)]
+          [analyze-line (-> single-line-clues? tile-line? line-clue-analysis/c)]
           [solve-line (-> single-line-clues? tile-line? (solver-result/c tile-line?))]))
 
 ;; -----------------------------------------------------------------------------
 
-(struct line-solution (board-tiles clue-tiless clue-tiles-left) #:transparent)
+(struct line-solution (result analysis-thunk) #:transparent)
 
 ;; do-solve-line : single-line-clues? tile-line? -> (or/c line-solution? 'error)
 (define (do-solve-line clues-lst user-tiles)
@@ -53,9 +53,14 @@
 
     ;; -------------------------------------------------------------------------
 
-    ;; clue-tiles-left : natural? -> boolean?
+    ;; clue-solved? : natural? -> boolean?
     (define (clue-solved? clue-i)
       (zero? (vector-ref clue-tiles-left clue-i)))
+
+    ;; all-clues-solved? : -> boolean?
+    (define (all-clues-solved?)
+      (for/and ([i (in-range num-clues)])
+        (clue-solved? i)))
 
     (define (board-set! i val
                         #:contradiction-reason [reason (current-contradiction-reason)])
@@ -429,19 +434,7 @@
 
     ;; -------------------------------------------------------------------------
 
-    (with-handlers* ([exn:contradiction? (λ (exn) 'error)])
-      (gain-information-to-fixed-point)
-      (line-solution board-tiles clue-tiless clue-tiles-left))))
-
-;; -------------------------------------------------------------------------
-
-;; solve-line : single-line-clues? tile-line? -> (solver-result/c tile-line?)
-(define (solve-line clues tiles)
-  (match (do-solve-line clues tiles)
-    ['error 'error]
-    [(line-solution board-tiles clue-tiless clue-tiles-left)
-     (define num-tiles (vector-length board-tiles))
-     (solver-result
+    (define (extract-solved-tiles)
       (for/array #:length num-tiles
                  ([i (in-range num-tiles)])
         (match (vector-ref board-tiles i)
@@ -450,9 +443,45 @@
                  (eq? (vector-ref clue-tiles i) 'cross))
                'cross
                'empty)]
-          [tile tile]))
-      (for/and ([tiles-left (in-vector clue-tiles-left)])
-        (zero? tiles-left)))]))
+          [tile tile])))
+
+    (define (extract-analysis solved-tiles)
+      (define analysis
+        (for/list ([clue-tiles (in-array clue-tiless)])
+          (define first-full-i (find-first clue-tiles tile-full?))
+          (cond
+            [first-full-i
+             (define last-full-i (find-last clue-tiles tile-full?))
+             (if (and (bounded-before? user-tiles first-full-i)
+                      (bounded-after? user-tiles last-full-i)
+                      (for/and ([i (in-inclusive-range first-full-i last-full-i)])
+                        (tile-full? (array-ref user-tiles i))))
+                 'done
+                 'pending)]
+            [else 'pending])))
+
+      (define solved-tile-count
+        (for/sum ([user-tile (in-array user-tiles)]
+                  [solved-tiles (in-array solved-tiles)]
+                  #:when (and (tile-empty? user-tile)
+                              (not (tile-empty? solved-tiles))))
+          1))
+
+      (line-clue-analysis analysis solved-tile-count))
+
+    (with-handlers* ([exn:contradiction? (λ (exn) 'error)])
+      (gain-information-to-fixed-point)
+      (define solved-tiles (extract-solved-tiles))
+      (line-solution (solver-result solved-tiles (all-clues-solved?))
+                     (λ () (extract-analysis solved-tiles))))))
+
+;; -----------------------------------------------------------------------------
+
+;; solve-line : single-line-clues? tile-line? -> (solver-result/c tile-line?)
+(define (solve-line clues tiles)
+  (match (do-solve-line clues tiles)
+    ['error 'error]
+    [(line-solution result _) result]))
 
 (module+ test
   (check-equal? (solve-line '(1 2 1) #(empty empty empty empty empty empty))
@@ -466,14 +495,19 @@
 
 ;; -------------------------------------------------------------------------
 
-;; analyze-line/simple : single-line-clues? tile-line? -> (or/c 'done 'error #f)
+;; analyze-line/simple : single-line-clues? tile-line? -> (or/c line-clue-analysis/c #f)
 ;;
 ;; The simple analyzer performs a quick, cheap check to see whether a given line
 ;; is fully solved. A result of #f requires the use of the fancy analyzer.
 (define (analyze-line/simple clues tiles)
   (define num-tiles (array-length tiles))
   (let loop ([clues clues]
-             [i 0])
+             [i 0]
+             [num-empty 0])
+    (define (accum-empty tile)
+      (if (and tile (tile-empty? tile))
+          (add1 num-empty)
+          num-empty))
     (cond
       [(< i num-tiles)
        (match (array-ref tiles i)
@@ -483,43 +517,38 @@
             [(cons clue clues)
              (and (<= (+ i clue) num-tiles)
                   (for/and ([j (in-range 1 clue)])
-                    (eq? (array-ref tiles (+ i j)) 'full))
-                  (or (= (+ i clue) num-tiles)
-                      (not (eq? (array-ref tiles (+ i clue)) 'full)))
-                  (loop clues (+ i clue 1)))])]
-         [_ (loop clues (add1 i))])]
-      [(empty? clues) 'done]
+                    (tile-full? (array-ref tiles (+ i j))))
+                  (let ()
+                    (define next-tile
+                      (and (< (+ i clue) num-tiles)
+                           (array-ref tiles (+ i clue))))
+                    (and (not (eq? next-tile 'full))
+                         (loop clues (+ i clue 1) (accum-empty next-tile)))))])]
+         [tile
+          (loop clues (add1 i) (accum-empty tile))])]
+      [(empty? clues)
+       (line-clue-analysis 'done num-empty)]
       [else #f])))
 
 (module+ test
   (check-equal? (analyze-line/simple '(1) #(empty empty empty)) #f)
-  (check-equal? (analyze-line/simple '(1) #(full empty empty)) 'done)
-  (check-equal? (analyze-line/simple '(1) #(empty full empty)) 'done)
-  (check-equal? (analyze-line/simple '(1) #(empty empty full)) 'done)
+  (check-equal? (analyze-line/simple '(1) #(full empty empty))
+                (line-clue-analysis 'done 2))
+  (check-equal? (analyze-line/simple '(1) #(empty full empty))
+                (line-clue-analysis 'done 2))
+  (check-equal? (analyze-line/simple '(1) #(empty empty full))
+                (line-clue-analysis 'done 2))
   (check-equal? (analyze-line/simple '(1 1) #(full full empty)) #f)
-  (check-equal? (analyze-line/simple '(1 1) #(full empty full)) 'done)
+  (check-equal? (analyze-line/simple '(1 1) #(full empty full))
+                (line-clue-analysis 'done 1))
   (check-equal? (analyze-line/simple '(1) #(full empty full)) 'error))
 
 ;; analyze-line/solve : single-line-clues? tile-line? -> line-clue-analysis?
 (define (analyze-line/solve clues user-tiles)
-  (define (extract-analysis clue-tiles)
-    (define first-full-i (find-first clue-tiles tile-full?))
-    (cond
-      [first-full-i
-       (define last-full-i (find-last clue-tiles tile-full?))
-       (if (and (bounded-before? user-tiles first-full-i)
-                (bounded-after? user-tiles last-full-i)
-                (for/and ([i (in-inclusive-range first-full-i last-full-i)])
-                  (tile-full? (array-ref user-tiles i))))
-           'done
-           'pending)]
-      [else 'pending]))
-
   (match (do-solve-line clues user-tiles)
     ['error 'error]
-    [(line-solution _ clue-tiless _)
-     (for/list ([clue-tiles (in-array clue-tiless)])
-       (extract-analysis clue-tiles))]))
+    [(line-solution _ analysis-thunk)
+     (analysis-thunk)]))
 
 ;; analyze-line : single-line-clues? tile-line? -> line-clue-analysis?
 (define (analyze-line clues tiles)
@@ -527,12 +556,18 @@
       (analyze-line/solve clues tiles)))
 
 (module+ test
-  (check-equal? (analyze-line '(1 1) #(full cross empty)) '(done pending))
-  (check-equal? (analyze-line '(1 1) #(full full  empty)) 'error)
+  (check-equal? (analyze-line '(1 1) #(full cross empty))
+                (line-clue-analysis '(done pending) 1))
+  (check-equal? (analyze-line '(1 1) #(full full empty)) 'error)
   (check-equal? (analyze-line '(3) #(cross empty full)) 'error)
   (check-equal? (analyze-line '(3) #(cross empty empty)) 'error)
-  (check-equal? (analyze-line '(3 1) #(empty empty empty cross full cross empty)) '(pending done))
-  (check-equal? (analyze-line '(1 1 1) #(cross cross full cross full cross empty cross cross)) '(done done pending))
-  (check-equal? (analyze-line '(1 1) #(cross cross full cross empty empty empty)) '(done pending))
-  (check-equal? (analyze-line '(1 3 2) #(empty cross full full full cross empty empty empty cross full empty)) '(pending done pending))
-  (check-equal? (analyze-line '(2 2 1 1) #(empty empty cross full full cross empty full empty empty full empty cross full cross empty)) '(done pending pending done)))
+  (check-equal? (analyze-line '(3 1) #(empty empty empty cross full cross empty))
+                (line-clue-analysis '(pending done) 4))
+  (check-equal? (analyze-line '(1 1 1) #(cross cross full cross full cross empty cross cross))
+                (line-clue-analysis '(done done pending) 1))
+  (check-equal? (analyze-line '(1 1) #(cross cross full cross empty empty empty))
+                (line-clue-analysis '(done pending) 0))
+  (check-equal? (analyze-line '(1 3 2) #(empty cross full full full cross empty empty empty cross full empty))
+                (line-clue-analysis '(pending done pending) 5))
+  (check-equal? (analyze-line '(2 2 1 1) #(empty empty cross full full cross empty full empty empty full empty cross full cross empty))
+                (line-clue-analysis '(done pending pending done) 5)))

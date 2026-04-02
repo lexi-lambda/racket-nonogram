@@ -21,7 +21,10 @@
           [clue-analysis? flat-contract?]
           [single-line-analysis? flat-contract?]
           [mega-line-analysis? flat-contract?]
-          [line-clue-analysis? flat-contract?]
+          [line-clue-analysis-result? flat-contract?]
+          (struct line-clue-analysis ([result line-clue-analysis-result?]
+                                      [hint-weight (and/c real? exact? (not/c negative?))]))
+          [line-clue-analysis/c flat-contract?]
           [axis-clue-analysis? flat-contract?]
           (struct board-analysis ([row-analysis axis-clue-analysis?]
                                   [column-analysis axis-clue-analysis?]))
@@ -186,20 +189,25 @@
                 (array/c single-line-analysis?
                          single-line-analysis?))))
 
-(define line-clue-analysis?
+(define line-clue-analysis-result?
   (or/c 'done
-        'error
-        single-line-analysis?
+        #;single-line-analysis? ; subsumed by `mega-line-analysis?`
         mega-line-analysis?))
 
-(define axis-clue-analysis? (arrayof line-clue-analysis?))
+(struct line-clue-analysis
+  (result       ;; line-clue-analysis-result?
+   hint-weight) ;; natural? (currently just the number of tiles solved per line)
+  #:transparent)
+
+(define line-clue-analysis/c (or/c line-clue-analysis? 'error))
+(define axis-clue-analysis? (arrayof line-clue-analysis/c))
 (struct board-analysis
   (row-analysis     ;; axis-clue-analysis?
    column-analysis) ;; axis-clue-analysis?
   #:transparent)
 
 (define (line-analysis-solved? analysis)
-  (eq? analysis 'done))
+  (eq? (line-clue-analysis-result analysis) 'done))
 
 (define (axis-analysis-solved? analysis)
   (for/and ([analysis (in-array analysis)])

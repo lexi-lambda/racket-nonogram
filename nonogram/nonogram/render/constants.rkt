@@ -17,14 +17,15 @@
               (bitwise-bit-field n 0 8)))
 
 (define (hsv* hue-deg sat val [alpha 1.0])
-  (->color% (hsv (/ hue-deg 360.0) sat val alpha)))
+  (hsv (/ hue-deg 360.0) sat val alpha))
 
 (define CLUE-SIZE 16)
 (define CLUE-GAP 6)
 (define CLUE-BOARD-GAP 4)
 (define CLUE-PENDING-COLOR (hsv* 0 0 0.19))
-(define CLUE-DONE-COLOR (hsv* 0 0 0.19 0.3))
-(define CLUE-ERROR-COLOR "red")
+(define CLUE-HINT-COLOR (hsv* 217 0.94 0.89))
+(define CLUE-DONE-ALPHA 0.3)
+(define CLUE-ERROR-COLOR (->rgb "red"))
 (define CLUE-UNDERLAY-RADIUS 3)
 
 (define MEGA-CLUE-SIZE 20)

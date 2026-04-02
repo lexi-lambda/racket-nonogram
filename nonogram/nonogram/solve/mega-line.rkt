@@ -15,17 +15,12 @@
 
 (provide (maybe-contract-out
           [analyze-line/mega
-           (-> mega-line-clues? mega-tile-line? line-clue-analysis?)]
+           (-> mega-line-clues? mega-tile-line? line-clue-analysis/c)]
           [solve-line/mega (-> mega-line-clues? mega-tile-line? (solver-result/c mega-tile-line?))]))
 
 ;; -----------------------------------------------------------------------------
 
-(struct mega-line-solution
-  (board-tiles
-   clue-tiless
-   clue-tiles-left
-   line-clue-indexes)
-  #:transparent)
+(struct line-solution (result analysis-thunk) #:transparent)
 
 (define (clues-ref cvec clue-i)
   (match clue-i
@@ -150,6 +145,14 @@ solver to keep the logic simpler. |#
                     (single-line-index i 1 j)))]
           [_ i])))
 
+    (define clue-indexes/flat
+      (for*/array ([chunk (in-array clue-indexes)]
+                   [i (match chunk
+                        [(array is0 is1)
+                         (in-sequences (in-array is0) (in-array is1))]
+                        [_ (in-value chunk)])])
+        i))
+
     (define mega-clue-indexes
       (for/array ([(chunk i) (in-indexed (in-array clues))]
                   #:when (clue? chunk))
@@ -254,9 +257,14 @@ solver to keep the logic simpler. |#
                [next-i
                 (list next-i)]))]))
 
-    ;; clue-tiles-left : clue-index? -> boolean?
+    ;; clue-solved? : clue-index? -> boolean?
     (define (clue-solved? clue-i)
       (zero? (clues-ref clue-tiles-left clue-i)))
+
+    ;; all-clues-solved? : -> boolean?
+    (define (all-clues-solved?)
+      (for/and ([clue-i (in-array clue-indexes/flat)])
+        (clue-solved? clue-i)))
 
     ;; clue-any-full? : clue-index? -> boolean?
     (define (clue-any-full? clue-i)
@@ -907,20 +915,18 @@ solver to keep the logic simpler. |#
 
     (define (gain-information-to-fixed-point)
       (let go-again ()
-        (for ([chunk (in-array clue-indexes)])
-          (match chunk
-            [(? array?)
-             (for* ([line (in-array chunk)]
-                    [clue-i (in-array line)])
-               (unless (clue-solved? clue-i)
-                 (gain-information-from-self/single clue-i))
+        (for ([clue-i (in-array clue-indexes/flat)])
+          (match clue-i
+            [(? single-line-index?)
+             (unless (clue-solved? clue-i)
+               (gain-information-from-self/single clue-i)
                (unless (clue-solved? clue-i)
                  (propagate-information-to-neighbors/single clue-i)))]
-            [clue-i
+            [_
              (unless (clue-solved? clue-i)
-               (gain-information-from-self/mega clue-i))
-             (unless (clue-solved? clue-i)
-               (propagate-information-to-neighbors/mega clue-i))]))
+               (gain-information-from-self/mega clue-i)
+               (unless (clue-solved? clue-i)
+                 (propagate-information-to-neighbors/mega clue-i)))]))
         (propagate-information-from-user)
         (when (current-gained-information?)
           (current-gained-information? #f)
@@ -928,20 +934,7 @@ solver to keep the logic simpler. |#
 
     ;; ---------------------------------------------------------------------------
 
-    (with-handlers* ([exn:contradiction? (λ (exn) 'error)])
-      (gain-information-to-fixed-point)
-      (mega-line-solution board-tiles clue-tiless clue-tiles-left line-clue-indexes))))
-
-;; -------------------------------------------------------------------------
-
-;; solve-line/mega : mega-line-clues? mega-tile-line? -> (solver-result/c mega-tile-line?)
-(define (solve-line/mega clues tiles)
-  (match (do-solve-line clues tiles)
-    ['error 'error]
-    [(mega-line-solution board-tiles clue-tiless clue-tiles-left line-clue-indexes)
-     (define num-tiles (mega-tiles-length board-tiles))
-     (define clue-tiles-ref/mega (make-clue-tiles-ref/mega clue-tiless))
-     (solver-result
+    (define (extract-solved-tiles)
       (for/array #:length 2 ([line-i (in-range 2)])
         (for/array #:length num-tiles ([i (in-range num-tiles)])
           (define mi (mega-index line-i i))
@@ -951,15 +944,78 @@ solver to keep the logic simpler. |#
                    (eq? (clue-tiles-ref/mega clue-i mi) 'cross))
                  'cross
                  'empty)]
-            [tile tile])))
-      (for/and ([chunk (in-vector clue-tiles-left)])
-        (match chunk
-          [(? array? chunks)
-           (for*/and ([chunk (in-array chunks)]
-                      [tiles-left (in-vector chunk)])
-             (zero? tiles-left))]
-          [tiles-left
-           (zero? tiles-left)])))]))
+            [tile tile]))))
+
+    ;; Like `extract-analysis` for single lines, but also checks that all of the
+    ;; opposite tiles are crossed out.
+    (define (extract-analysis/single clue-i)
+      (define line-i (single-line-index-line clue-i))
+      (define clue-tiles (clues-ref clue-tiless clue-i))
+      (define first-full-i (find-first clue-tiles tile-full?))
+      (cond
+        [first-full-i
+         (define last-full-i (find-last clue-tiles tile-full?))
+         (define this-user-tiles (array-ref user-tiles line-i))
+         (define opposite-user-tiles (array-ref user-tiles (opposite line-i)))
+         (if (and (bounded-before? this-user-tiles first-full-i)
+                  (bounded-after? this-user-tiles last-full-i)
+                  (for/and ([i (in-inclusive-range first-full-i last-full-i)])
+                    (and (tile-full? (array-ref this-user-tiles i))
+                         (tile-cross? (array-ref opposite-user-tiles i)))))
+             'done
+             'pending)]
+        [else 'pending]))
+
+    (define (extract-analysis/mega clue-i)
+      (define clue-tiles (clues-ref clue-tiless clue-i))
+      (define first-full-mi (find-first/mega clue-tiles tile-full?))
+      (cond
+        [first-full-mi
+         (define last-full-mi (find-last/mega clue-tiles tile-full?))
+         (if (and (bounded-before?/mega user-tiles first-full-mi)
+                  (bounded-after?/mega user-tiles last-full-mi)
+                  (for/and ([mi (in-inclusive-range first-full-mi last-full-mi)])
+                    (define tile (tiles-ref/mega user-tiles mi))
+                    (or (tile-full? tile)
+                        (tile-cross? tile))))
+             'done
+             'pending)]
+        [else 'pending]))
+
+    (define (extract-analysis solved-tiles)
+      (define analysis
+        (for/list ([chunk (in-array clue-indexes)])
+          (match chunk
+            [(array line-0 line-1)
+             (array (for/list ([clue-i (in-array line-0)])
+                      (extract-analysis/single clue-i))
+                    (for/list ([clue-i (in-array line-1)])
+                      (extract-analysis/single clue-i)))]
+            [clue-i
+             (extract-analysis/mega clue-i)])))
+
+      (define solved-tile-count
+        (for/sum ([mi (in-range num-tiles/mega)])
+          (if (and (tile-empty? (tiles-ref/mega user-tiles mi))
+                   (not (tile-empty? (tiles-ref/mega solved-tiles mi))))
+              1
+              0)))
+
+      (line-clue-analysis analysis (/ solved-tile-count 2)))
+
+    (with-handlers* ([exn:contradiction? (λ (exn) 'error)])
+      (gain-information-to-fixed-point)
+      (define solved-tiles (extract-solved-tiles))
+      (line-solution (solver-result solved-tiles (all-clues-solved?))
+                     (λ () (extract-analysis solved-tiles))))))
+
+;; -------------------------------------------------------------------------
+
+;; solve-line/mega : mega-line-clues? mega-tile-line? -> (solver-result/c mega-tile-line?)
+(define (solve-line/mega clues tiles)
+  (match (do-solve-line clues tiles)
+    ['error 'error]
+    [(line-solution result _) result]))
 
 (module+ test
   (check-equal? (solve-line/mega '(2) #(#(cross full empty empty)
@@ -1060,7 +1116,7 @@ solver to keep the logic simpler. |#
 
 ;; -----------------------------------------------------------------------------
 
-;; analyze-line/mega/simple : mega-line-clues? mega-tile-line? -> (or/c 'done 'error #f)
+;; analyze-line/mega/simple : mega-line-clues? mega-tile-line? -> (or/c line-clue-analysis/c #f)
 (define (analyze-line/mega/simple clues tiles)
   (define num-tiles (array-length (array-ref tiles 0)))
   (define num-tiles/mega (* num-tiles 2))
@@ -1107,110 +1163,73 @@ solver to keep the logic simpler. |#
                 (and (= size clue)
                      (connected-region-spans-both-lines? mi end-mi size)
                      (loop clues end-mi))])])]
-         [_ (loop clues (add1 mi))])]
-      [(empty? clues) 'done]
+         [tile
+          (loop clues (add1 mi))])]
+      [(empty? clues)
+       (line-clue-analysis
+        'done
+        (for/sum ([mi (in-range 0 num-tiles/mega)]
+                  #:when (tile-empty? (tiles-ref/mega tiles mi)))
+          1))]
       [else #f])))
 
 (module+ test
   (check-equal? (analyze-line/mega/simple '(2) #(#(empty empty) #(empty empty))) #f)
   (check-equal? (analyze-line/mega/simple '(2) #(#(full full) #(empty empty))) #f)
-  (check-equal? (analyze-line/mega/simple '(2) #(#(full empty) #(full empty))) 'done)
+  (check-equal? (analyze-line/mega/simple '(2) #(#(full empty) #(full empty)))
+                (line-clue-analysis 'done 2))
   (check-equal? (analyze-line/mega/simple '(2) #(#(full empty full) #(full empty empty))) 'error)
 
   (check-equal? (analyze-line/mega/simple '(#[(1) (2)]) #(#(full  empty empty)
                                                           #(empty full  full)))
-                'done)
+                (line-clue-analysis 'done 3))
   (check-equal? (analyze-line/mega/simple '(#[(1) (2)]) #(#(empty empty full)
                                                           #(full  full  empty)))
-                'done)
+                (line-clue-analysis 'done 3))
   (check-equal? (analyze-line/mega/simple '(4 #[(1) ()])
                                           #(#(cross full cross full)
                                             #(full  full full  cross)))
-                'done)
+                (line-clue-analysis 'done 0))
   (check-equal? (analyze-line/mega/simple '(#[(1) ()] 3)
                                           #(#(empty cross full)
                                             #(empty full  full)))
                 #f))
 
-;; analyze-line/mega/solve : mega-line-clues? mega-tile-line? -> line-clue-analysis?
+;; analyze-line/mega/solve : mega-line-clues? mega-tile-line? -> line-clue-analysis/c
 (define (analyze-line/mega/solve clues user-tiles)
   (match (do-solve-line clues user-tiles)
     ['error 'error]
-    [(mega-line-solution _ clue-tiless _ _)
-     ;; Like `extract-analysis` for single line clues, but also checks that all of
-     ;; the opposite tiles are crossed out.
-     (define (extract-analysis/single clue-i)
-       (define line-i (single-line-index-line clue-i))
-       (define clue-tiles (clues-ref clue-tiless clue-i))
-       (define first-full-i (find-first clue-tiles tile-full?))
-       (cond
-         [first-full-i
-          (define last-full-i (find-last clue-tiles tile-full?))
-          (define this-user-tiles (array-ref user-tiles line-i))
-          (define opposite-user-tiles (array-ref user-tiles (opposite line-i)))
-          (if (and (bounded-before? this-user-tiles first-full-i)
-                   (bounded-after? this-user-tiles last-full-i)
-                   (for/and ([i (in-inclusive-range first-full-i last-full-i)])
-                     (and (tile-full? (array-ref this-user-tiles i))
-                          (tile-cross? (array-ref opposite-user-tiles i)))))
-              'done
-              'pending)]
-         [else 'pending]))
-
-     (define (extract-analysis/mega clue-i)
-       (define clue-tiles (clues-ref clue-tiless clue-i))
-       (define first-full-mi (find-first/mega clue-tiles tile-full?))
-       (cond
-         [first-full-mi
-          (define last-full-mi (find-last/mega clue-tiles tile-full?))
-          (if (and (bounded-before?/mega user-tiles first-full-mi)
-                   (bounded-after?/mega user-tiles last-full-mi)
-                   (for/and ([mi (in-inclusive-range first-full-mi last-full-mi)])
-                     (define tile (tiles-ref/mega user-tiles mi))
-                     (or (tile-full? tile)
-                         (tile-cross? tile))))
-              'done
-              'pending)]
-         [else 'pending]))
-
-     (for/list ([(chunk i) (in-indexed (in-list clues))])
-       (match chunk
-         [(array line-0 line-1)
-          (array (for/list ([j (in-range (length line-0))])
-                   (extract-analysis/single (single-line-index i 0 j)))
-                 (for/list ([j (in-range (length line-1))])
-                   (extract-analysis/single (single-line-index i 1 j))))]
-         [_
-          (extract-analysis/mega i)]))]))
+    [(line-solution _ analysis-thunk)
+     (analysis-thunk)]))
 
 (module+ test
   (check-equal? (analyze-line/mega/solve '(2) #(#(empty empty empty empty)
                                                 #(empty empty empty empty)))
-                '(pending))
+                (line-clue-analysis '(pending) 0))
   (check-equal? (analyze-line/mega/solve '(2) #(#(empty full empty empty)
                                                 #(empty full empty empty)))
-                '(pending))
+                (line-clue-analysis '(pending) 3))
   (check-equal? (analyze-line/mega/solve '(2) #(#(cross full cross empty)
                                                 #(cross full empty empty)))
-                '(pending))
+                (line-clue-analysis '(pending) 3/2))
   (check-equal? (analyze-line/mega/solve '(2) #(#(cross full empty empty)
                                                 #(empty full cross empty)))
-                '(pending))
+                (line-clue-analysis '(pending) 2))
   (check-equal? (analyze-line/mega/solve '(2) #(#(cross full cross empty)
                                                 #(empty full cross empty)))
-                '(pending))
+                (line-clue-analysis '(pending) 3/2))
   (check-equal? (analyze-line/mega/solve '(2) #(#(empty full cross empty)
                                                 #(cross full cross empty)))
-                '(pending))
+                (line-clue-analysis '(pending) 3/2))
   (check-equal? (analyze-line/mega/solve '(2) #(#(cross full  cross empty)
                                                 #(cross empty cross empty)))
-                '(pending))
+                (line-clue-analysis '(pending) 3/2))
   (check-equal? (analyze-line/mega/solve '(2) #(#(cross empty cross empty)
                                                 #(cross full  cross empty)))
-                '(pending))
+                (line-clue-analysis '(pending) 3/2))
   (check-equal? (analyze-line/mega/solve '(2) #(#(cross full cross empty)
                                                 #(cross full cross empty)))
-                '(done))
+                (line-clue-analysis '(done) 1))
   (check-equal? (analyze-line/mega/solve '(2) #(#(cross cross cross cross)
                                                 #(empty empty empty empty)))
                 'error)
@@ -1227,39 +1246,39 @@ solver to keep the logic simpler. |#
   (check-equal? (analyze-line/mega '(#[() (1)] 3)
                                    #(#(empty empty empty empty)
                                      #(full  empty empty empty)))
-                '(#[() (pending)] pending))
+                (line-clue-analysis '(#[() (pending)] pending) 1))
   (check-equal? (analyze-line/mega '(#[() (1)] 3)
                                    #(#(cross empty empty empty)
                                      #(full  cross empty empty)))
-                '(#[() (done)] pending))
+                (line-clue-analysis '(#[() (done)] pending) 0))
   (check-equal? (analyze-line/mega '(2 #[(1 1) ()])
                                    #(#(empty empty cross full  cross empty)
                                      #(empty empty empty cross empty empty)))
-                '(pending #[(done pending) ()]))
+                (line-clue-analysis '(pending #[(done pending) ()]) 2))
   (check-equal? (analyze-line/mega '(2 3 #[(1) ()])
                                    #(#(empty empty empty empty empty)
                                      #(empty empty empty empty empty)))
-                '(pending pending #[(pending) ()]))
+                (line-clue-analysis '(pending pending #[(pending) ()]) 5))
   (check-equal? (analyze-line/mega '(3 5)
                                    #(#(empty full empty cross empty full)
                                      #(empty full empty full  full  full)))
-                '(pending pending))
+                (line-clue-analysis '(pending pending) 1))
   (check-equal? (analyze-line/mega '(3 4)
                                    #(#(empty full  cross full empty)
                                      #(full  cross empty full empty)))
-                '(pending pending))
+                (line-clue-analysis '(pending pending) 1/2))
   (check-equal? (analyze-line/mega '(3 4)
                                    #(#(empty full  cross full empty)
                                      #(full  empty empty full empty)))
-                '(pending pending))
+                (line-clue-analysis '(pending pending) 0))
   (check-equal? (analyze-line/mega '(#[(1) ()] 3)
                                    #(#(empty cross full)
                                      #(empty full  full)))
-                '(#[(pending) ()] pending))
+                (line-clue-analysis '(#[(pending) ()] pending) 1))
   (check-equal? (analyze-line/mega '(3 4 #[(1 1) ()])
                                    #(#(empty empty empty empty empty empty empty empty)
                                      #(full  cross full  full  full  cross cross cross)))
-                '(pending pending #[(pending pending) ()]))
+                (line-clue-analysis '(pending pending #[(pending pending) ()]) 4))
   (check-equal? (analyze-line/mega '(3 3 #[(1 1) ()])
                                    #(#(empty empty empty empty empty empty empty)
                                      #(full  cross full  full  cross cross cross)))
@@ -1276,4 +1295,4 @@ solver to keep the logic simpler. |#
   (check-equal? (analyze-line/mega '(2 2 4)
                                    #(#(empty empty cross full cross empty cross empty empty)
                                      #(empty empty cross full cross empty full  empty empty)))
-                '(pending done pending)))
+                (line-clue-analysis '(pending done pending) 1/2)))

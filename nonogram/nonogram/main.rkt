@@ -7,15 +7,19 @@
          racket/contract
          racket/fasl
          racket/gui/base
+         racket/list
          racket/match
          racket/path
          racket/port
+         racket/random
          racket/runtime-path
          racket/serialize
+         racket/set
          threading
          toolbox/list
          toolbox/who
          "core.rkt"
+         "lib/array.rkt"
          "lib/geometry.rkt"
          "logger.rkt"
          "render.rkt"
@@ -27,12 +31,20 @@
 
 (serializable-struct world
   (puzzle
+   hint-mode ;; (or/c 'none 'errors 'all)
+   hint-rows
+   hint-columns
    cursor-locations
    show-errors?)
   #:transparent)
 
 (define (make-world puzzle)
-  (world puzzle (hasheqv) #f))
+  (world puzzle
+         'errors
+         (seteqv)
+         (seteqv)
+         (hasheqv)
+         #f))
 
 (define drag-mode? (or/c #f tile? 'unmark))
 
@@ -62,6 +74,8 @@
 (serializable-struct action () #:transparent)
 (serializable-struct a:set-puzzle action (puzzle) #:transparent)
 (serializable-struct a:set-tile action (location tile) #:transparent)
+(serializable-struct a:set-hint-mode action (value) #:transparent)
+(serializable-struct a:add-hint-line action (axis index) #:transparent)
 (serializable-struct a:move-cursor action (location) #:transparent)
 (serializable-struct a:set-show-errors? action (value) #:transparent)
 
@@ -74,7 +88,12 @@
 
 (define (echo-action? action)
   (match action
-    [(or (? a:set-puzzle?) (? a:set-tile?) (? a:set-show-errors?)) #t]
+    [(or (? a:set-puzzle?)
+         (? a:set-tile?)
+         (? a:set-hint-mode?)
+         (? a:add-hint-line?)
+         (? a:set-show-errors?))
+     #t]
     [(? a:move-cursor?) #f]))
 
 ;; -----------------------------------------------------------------------------
@@ -180,6 +199,42 @@
   (define timing-end (timing-start 'on-keyboard-event))
   (define wld (client-state-world cs))
 
+  (define (select-hint-line)
+    (define (select-best lines excluded)
+      (for/fold ([best-is '()]
+                 [best-weight 1])
+                ([(line i) (in-indexed (in-array lines))]
+                 #:unless (set-member? excluded i))
+        (cond
+          [(line-clue-analysis? line)
+           (define weight (line-clue-analysis-hint-weight line))
+           (cond
+             [(> weight best-weight)
+              (values (list i) weight)]
+             [(= weight best-weight)
+              (values (cons i best-is) best-weight)]
+             [else
+              (values best-is best-weight)])])))
+
+    (define analysis (client-state-board-analysis cs))
+    (define-values [best-rows best-row-weight]
+      (select-best (board-analysis-row-analysis analysis)
+                   (world-hint-rows wld)))
+    (define-values [best-columns best-column-weight]
+      (select-best (board-analysis-column-analysis analysis)
+                   (world-hint-columns wld)))
+
+    (cond
+      [(and (empty? best-rows) (empty? best-columns))
+       #f]
+      [(> best-row-weight best-column-weight)
+       (a:add-hint-line 'row (random-ref best-rows))]
+      [(> best-column-weight best-row-weight)
+       (a:add-hint-line 'column (random-ref best-columns))]
+      [else
+       (random-ref (append (map (λ~> (a:add-hint-line 'row _)) best-rows)
+                           (map (λ~> (a:add-hint-line 'column _)) best-columns)))]))
+
   (define (process-solver)
     (match event-type
       ['press
@@ -203,7 +258,14 @@
             (struct-copy puzzle old-puzzle
               [board (board-clear (puzzle-board old-puzzle))])]
            [_ old-puzzle]))
+
        (append
+        (when/list* (eq? key-code #\h)
+          (maybe->list (select-hint-line)))
+        (when/list (eq? key-code 'f4)
+          (a:set-hint-mode (match (world-hint-mode wld)
+                             [(or 'none 'all) 'errors]
+                             ['errors         'all])))
         (when/list (eq? key-code 'f5)
           (a:set-show-errors? (not (world-show-errors? wld))))
         (when/list (eq? key-code 'f8)
@@ -218,25 +280,63 @@
 
 ;; perform-action : client-state? client-id? action? -> client-state?
 (define (perform-action cs client-id action)
+  (define (remove-completed-hint-lines wld analysis)
+    (define (do-axis axis-analysis hint-lines)
+      (for/fold ([hint-lines* hint-lines])
+                ([clue-i (in-immutable-set hint-lines)])
+        (match (array-ref axis-analysis clue-i)
+          [(? line-clue-analysis? analysis)
+           #:when (zero? (line-clue-analysis-hint-weight analysis))
+           (set-remove hint-lines* clue-i)]
+          [_
+           hint-lines*])))
+
+    (struct-copy world wld
+      [hint-rows    (do-axis (board-analysis-row-analysis analysis)
+                             (world-hint-rows wld))]
+      [hint-columns (do-axis (board-analysis-column-analysis analysis)
+                             (world-hint-columns wld))]))
+
   (match action
     [(a:set-puzzle pz)
+     (define new-analysis (analyze-puzzle pz))
      (struct-copy client-state cs
        [world (struct-copy world (client-state-world cs)
-                [puzzle pz])]
-       [board-analysis (analyze-puzzle pz)])]
+                [puzzle pz]
+                [hint-rows (seteqv)]
+                [hint-columns (seteqv)])]
+       [board-analysis new-analysis])]
 
     [(a:set-tile (and loc (point x y)) tile)
      (define old-wld (client-state-world cs))
      (define old-pz (world-puzzle old-wld))
      (define new-pz (struct-copy puzzle old-pz
                       [board (board-set (puzzle-board old-pz) x y tile)]))
+     (define new-analysis (reanalyze-lines-at new-pz
+                                              (client-state-board-analysis cs)
+                                              loc))
      (struct-copy client-state cs
-       [world (struct-copy world old-wld
-                [puzzle new-pz])]
-       [board-analysis
-        (reanalyze-lines-at new-pz
-                            (client-state-board-analysis cs)
-                            loc)])]
+       [world (~> (struct-copy world old-wld
+                    [puzzle new-pz])
+                  (remove-completed-hint-lines new-analysis))]
+       [board-analysis new-analysis])]
+
+    [(a:set-hint-mode value)
+     (struct-copy client-state cs
+       [world (struct-copy world (client-state-world cs)
+                [hint-mode value])])]
+
+    [(a:add-hint-line axis index)
+     (define wld (client-state-world cs))
+     (struct-copy client-state cs
+       [world
+        (match axis
+          ['row
+           (struct-copy world wld
+             [hint-rows (set-add (world-hint-rows wld) index)])]
+          ['column
+           (struct-copy world wld
+             [hint-columns (set-add (world-hint-columns wld) index)])])])]
 
     [(a:move-cursor loc)
      (define wld (client-state-world cs))
@@ -461,12 +561,16 @@
          (collect-garbage 'incremental)
          (define cs this-cs)
          (define wld (client-state-world cs))
-         (send puzzle-renderer set-puzzle! (world-puzzle wld))
-         (send puzzle-renderer set-board-analysis! (client-state-board-analysis cs))
-         (send puzzle-renderer set-solved-board! (client-state-solved-board cs))
-         (send puzzle-renderer set-show-errors?! (world-show-errors? wld))
-         (send puzzle-renderer set-cursor-locations! (world-cursor-locations wld))
-         (send puzzle-renderer set-show-fps?! (client-state-show-fps? cs))
+         (send puzzle-renderer set-state!
+               #:puzzle (world-puzzle wld)
+               #:board-analysis (client-state-board-analysis cs)
+               #:hint-mode (world-hint-mode wld)
+               #:hint-rows (world-hint-rows wld)
+               #:hint-columns (world-hint-columns wld)
+               #:solved-board (client-state-solved-board cs)
+               #:show-errors? (world-show-errors? wld)
+               #:cursor-locations (world-cursor-locations wld)
+               #:show-fps? (client-state-show-fps? cs))
          (send puzzle-renderer render!))
 
        (define/override (on-size w h)

@@ -25,6 +25,8 @@ Alternatively, run `racket -yl- nonogram/main --help` to see the full list of op
 * **Right Click** (or **Ctrl+Left Click**) crosses out the clicked tile.
 * **Middle Click** (or **Alt+Left Click**) marks the clicked tile.
 * Clicking and dragging is supported to fill/cross/mark several tiles at once.
+* **H** requests a hint. A suggested row or column will be colored blue, indicating that progress can be made in it.
+* **F4** toggles showing all available hints all of the time.
 * **F5** toggles the error overlay, which highlights any incorrectly placed tiles. (This currently only works for puzzles the solver can solve; see below.)
 * **F12** completely clears the current puzzle.
 

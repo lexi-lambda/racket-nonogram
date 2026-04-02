@@ -28,7 +28,8 @@
 (provide clue-analysis?
          single-line-analysis?
          mega-line-analysis?
-         line-clue-analysis?
+         (struct-out line-clue-analysis)
+         line-clue-analysis/c
          axis-clue-analysis?
          (struct-out board-analysis)
          board-analysis-solved?
@@ -71,14 +72,18 @@
                                   #(empty empty full)))
                          clues-1))
                 (board-analysis
-                 #((pending) (done pending) (pending))
-                 #(done (pending) error))))
+                 (array (line-clue-analysis '(pending) 0)
+                        (line-clue-analysis '(done pending) 1)
+                        (line-clue-analysis '(pending) 2))
+                 (array (line-clue-analysis 'done 2)
+                        (line-clue-analysis '(pending) 0)
+                        'error))))
 
 ;; reanalyze-line-at : puzzle? axis-clue-analysis? axis? natural? -> axis-clue-analysis?
 (define (reanalyze-line-at pz old-axis-analysis axis i)
   (define board (puzzle-board pz))
   (define axis-clues (board-clues-axis (puzzle-clues pz) axis))
-  (match (line-index->axis-clue-index axis-clues i)
+  (match (line-index->axis-clue-index+offset axis-clues i)
     [(array clue-i line-i)
      (define i* (- i line-i))
      (define new-analysis

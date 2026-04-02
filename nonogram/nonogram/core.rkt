@@ -77,10 +77,12 @@
           (struct board-clues ([row-clues axis-clues?]
                                [column-clues axis-clues?]))
           [axis-clues-line-count (-> axis-clues? natural?)]
-          [line-index->axis-clue-index (-> axis-clues?
-                                           natural?
-                                           (or/c natural?
-                                                 (array/c natural? mega-line-offset?)))]
+          [line-index->axis-clue-index (-> axis-clues? natural? natural?)]
+          [line-index->axis-clue-index+offset
+           (-> axis-clues?
+               natural?
+               (or/c natural?
+                     (array/c natural? mega-line-offset?)))]
           [board-clues-axis (-> board-clues? axis? axis-clues?)]
           [board-clues-line (-> board-clues?
                                 axis?
@@ -316,11 +318,17 @@
   (for/sum ([lc (in-array lcs)])
     (line-clues-span lc)))
 
-;; line-index->axis-clue-index
+;; line-index->axis-clue-index : axis-clues? natural? -> natural?
+(define/who (line-index->axis-clue-index clues i)
+  (match (line-index->axis-clue-index+offset clues i #:who who)
+    [(array clue-i _) clue-i]
+    [clue-i           clue-i]))
+
+;; line-index->axis-clue-index+offset
 ;;   : axis-clues? natural?
 ;;  -> (or/c natural?
 ;;           (array/c natural? mega-line-offset?))
-(define/who (line-index->axis-clue-index clues i #:who [who who])
+(define/who (line-index->axis-clue-index+offset clues i #:who [who who])
   (define num-clues (array-length clues))
   (let loop ([ci 0]
              [j 0])
@@ -344,11 +352,11 @@
     (define axis-clues (array (line-clues 'single '(1))
                               (line-clues 'mega '(1))
                               (line-clues 'mega '(1))))
-    (check-equal? (line-index->axis-clue-index axis-clues 0) 0)
-    (check-equal? (line-index->axis-clue-index axis-clues 1) (array 1 0))
-    (check-equal? (line-index->axis-clue-index axis-clues 2) (array 1 1))
-    (check-equal? (line-index->axis-clue-index axis-clues 3) (array 2 0))
-    (check-equal? (line-index->axis-clue-index axis-clues 4) (array 2 1))))
+    (check-equal? (line-index->axis-clue-index+offset axis-clues 0) 0)
+    (check-equal? (line-index->axis-clue-index+offset axis-clues 1) (array 1 0))
+    (check-equal? (line-index->axis-clue-index+offset axis-clues 2) (array 1 1))
+    (check-equal? (line-index->axis-clue-index+offset axis-clues 3) (array 2 0))
+    (check-equal? (line-index->axis-clue-index+offset axis-clues 4) (array 2 1))))
 
 ;; board-clues-clues : board-clues? axis? -> axis-clues?
 (define (board-clues-axis clues axis)
@@ -361,7 +369,7 @@
 ;;                          (array/c mega-line-clues? mega-line-offset?))
 (define/who (board-clues-line clues axis i)
   (define axis-clues (board-clues-axis clues axis))
-  (match (line-index->axis-clue-index axis-clues i #:who who)
+  (match (line-index->axis-clue-index+offset axis-clues i #:who who)
     [(array ci which)
      (array (line-clues-clues (array-ref axis-clues ci)) which)]
     [ci

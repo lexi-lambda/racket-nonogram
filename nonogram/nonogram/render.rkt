@@ -9,6 +9,8 @@
          racket/list
          racket/match
          racket/math
+         racket/set
+         toolbox/color
          toolbox/format
          threading
          "core.rkt"
@@ -32,14 +34,26 @@
                   [board-analysis (or/c board-analysis? #f)]
                   [show-fps? boolean?])
             [set-size! (->m exact-positive-integer? exact-positive-integer? void?)]
-            [set-puzzle! (->m puzzle? void?)]
-            [set-board-analysis! (->m (or/c board-analysis? #f) void?)]
-            [set-solved-board! (->m (or/c board? #f) void?)]
-            [set-cursor-locations! (->m (hash/c natural? integer-point? #:immutable #t) void?)]
-            [set-show-errors?! (->m any/c void?)]
-            [set-show-fps?! (->m any/c void?)]
+            [set-state! (->*m [] [#:puzzle puzzle?
+                                  #:board-analysis board-analysis?
+                                  #:hint-mode hint-mode?
+                                  #:hint-rows (set/c natural? #:kind 'immutable)
+                                  #:hint-columns (set/c natural? #:kind 'immutable)
+                                  #:solved-board board?
+                                  #:cursor-locations (hash/c natural? integer-point? #:immutable #t)
+                                  #:show-errors? any/c
+                                  #:show-fps? any/c
+                                  #:picture-only? any/c]
+                              void?)]
             [get-tile-at (->m point? (or/c integer-point? #f))]
             [render! (->m void?)])]))
+
+;; -----------------------------------------------------------------------------
+
+(define not-given (gensym 'not-given))
+
+(define hint-mode? (or/c 'none 'errors 'all))
+(define default-hint-mode 'errors)
 
 ;; -----------------------------------------------------------------------------
 
@@ -80,22 +94,38 @@
 ;; -----------------------------------------------------------------------------
 
 ;; clue-analysis-color : (or/c clue-analysis? 'error #f) -> color?
-(define (clue-analysis-color analysis)
+(define (clue-analysis-color analysis #:hint? [hint? #f])
   (match analysis
-    [(or #f 'pending) CLUE-PENDING-COLOR]
-    ['done CLUE-DONE-COLOR]
-    ['error CLUE-ERROR-COLOR]))
+    ['error CLUE-ERROR-COLOR]
+    [_
+     (define base-color (->rgb (if hint?
+                                   CLUE-HINT-COLOR
+                                   CLUE-PENDING-COLOR)))
+     (match analysis
+       [(or #f 'pending)
+        base-color]
+       ['done
+        (rgb (rgb-red base-color)
+             (rgb-green base-color)
+             (rgb-blue base-color)
+             (* (rgb-alpha base-color)
+                CLUE-DONE-ALPHA))])]))
 
-;; render-clue/single : clue? (or/c clue-analysis? 'error #f) -> pict?
-(define (render-clue/single n [analysis #f])
-  (clue n #:color (clue-analysis-color analysis)))
+;; render-clue/single : clue? -> pict?
+(define (render-clue/single n
+                            #:analysis [analysis #f]
+                            #:hint? [hint? #f])
+  (clue n #:color (clue-analysis-color analysis #:hint? hint?)))
 
-;; render-clue/mega : axis? clue? (or/c clue-analysis? 'error #f) -> pict?
-(define (render-clue/mega axis n [analysis #f]
+;; render-clue/mega : axis? clue? -> pict?
+(define (render-clue/mega axis n
+                          #:analysis [analysis #f]
+                          #:hint? [hint? #f]
                           #:margin-before? [margin-before? #f]
                           #:margin-after? [margin-after? #f])
   (define row? (eq? axis 'row))
-  (~> (mega-clue axis n #:color (clue-analysis-color analysis))
+  (define color (clue-analysis-color analysis #:hint? hint?))
+  (~> (mega-clue axis n #:color color)
       (when~> margin-before?
         (cond~>
           [row? (inset MEGA-CLUE-MARGIN 0 0 0)]
@@ -106,16 +136,23 @@
           [else (inset 0 0 0 MEGA-CLUE-MARGIN)]))
       launder))
 
-;; render-line-clues/single : axis? single-line-clues? (or/c single-line-analysis? #f) -> pict?
-(define (render-line-clues/single axis line-clues [line-analysis #f]
+(define (in-line-analysis analysis)
+  (match analysis
+    [(or #f 'error 'done)
+     (in-cycle (list analysis))]
+    [(? list?)
+     (in-list analysis)]))
+
+;; render-line-clues/single : axis? single-line-clues? -> pict?
+(define (render-line-clues/single axis line-clues
+                                  #:analysis [line-analysis #f]
+                                  #:hint? [hint? #f]
                                   #:margin-before? [margin-before? #t]
                                   #:margin-after? [margin-after? #t])
   (define clue-picts
     (for/list ([clue (in-list line-clues)]
-               [analysis (if (list? line-analysis)
-                             (in-list line-analysis)
-                             (in-cycle (list line-analysis)))])
-      (render-clue/single clue analysis)))
+               [analysis (in-line-analysis line-analysis)])
+      (render-clue/single clue #:analysis analysis #:hint? hint?)))
   (launder
    (match axis
      ['row    (~> (hc-append (apply hc-append clue-picts #:gap CLUE-GAP)
@@ -125,15 +162,15 @@
      ['column (vc-append (apply vc-append clue-picts)
                          (blank TILE-SIZE 0))])))
 
-;; render-line-clues/mega : axis? mega-line-clues? (or/c mega-line-analysis? #f) -> pict?
-(define (render-line-clues/mega axis line-clues-lst [line-analysis #f])
+;; render-line-clues/mega : axis? mega-line-clues? -> pict?
+(define (render-line-clues/mega axis line-clues-lst
+                                #:analysis [line-analysis #f]
+                                #:hint? [hint? #f])
   (define line-clues (list->array line-clues-lst))
   (define num-chunks (array-length line-clues))
   (define chunk-picts
     (for/list ([(chunk i) (in-indexed (in-array line-clues))]
-               [analysis (if (list? line-analysis)
-                             (in-list line-analysis)
-                             (in-cycle (list line-analysis)))])
+               [analysis (in-line-analysis line-analysis)])
       (define at-start? (= i 0))
       (define at-end? (= (add1 i) num-chunks))
       (match chunk
@@ -142,10 +179,14 @@
            (if (array? analysis)
                (values (array-ref analysis 0) (array-ref analysis 1))
                (values analysis analysis)))
-         (define p0 (render-line-clues/single axis clues-0 analysis-0
+         (define p0 (render-line-clues/single axis clues-0
+                                              #:analysis analysis-0
+                                              #:hint? hint?
                                               #:margin-before? at-start?
                                               #:margin-after? at-end?))
-         (define p1 (render-line-clues/single axis clues-1 analysis-1
+         (define p1 (render-line-clues/single axis clues-1
+                                              #:analysis analysis-1
+                                              #:hint? hint?
                                               #:margin-before? at-start?
                                               #:margin-after? at-end?))
          (match axis
@@ -154,7 +195,9 @@
 
         [clue
          (render-clue/mega
-          axis clue analysis
+          axis clue
+          #:analysis analysis
+          #:hint? hint?
           #:margin-before? at-start?
           #:margin-after? (or at-end?
                               (and (eq? axis 'column)
@@ -166,21 +209,43 @@
      ['column (vc-append (apply vc-append chunk-picts)
                          (blank (* TILE-SIZE 2) 0))])))
 
-;; render-line-clues : axis? line-clues? (or/c line-clue-analysis? #f) -> pict?
-(define (render-line-clues axis clues [line-analysis #f])
+;; render-line-clues : axis? line-clues? (or/c line-clue-analysis/c #f) -> pict?
+(define (render-line-clues axis clues [line-analysis #f]
+                           #:hint-mode [hint-mode default-hint-mode]
+                           #:hint? [hint? #f])
   (match-define (line-clues type clues*) clues)
+  (define-values [analysis hint?*]
+    (match line-analysis
+      [(or #f 'error)
+       (values (and (not (eq? hint-mode 'none))
+                    line-analysis)
+               #f)]
+      [(line-clue-analysis analysis hint-weight)
+       (values analysis
+               (and (or hint? (eq? hint-mode 'all))
+                    (> hint-weight 0)))]))
   (match type
-    ['single (render-line-clues/single axis (if (empty? clues*) '(0) clues*) line-analysis)]
-    ['mega (render-line-clues/mega axis clues* line-analysis)]))
+    ['single
+     (render-line-clues/single axis (if (empty? clues*) '(0) clues*)
+                               #:analysis analysis
+                               #:hint? hint?*)]
+    ['mega
+     (render-line-clues/mega axis clues*
+                             #:analysis analysis
+                             #:hint? hint?*)]))
 
 ;; render-axis-clues : axis? axis-clues? (or/c clue-axis-analysis? #f) -> pict?
-(define (render-axis-clues axis axis-clues [axis-analysis #f])
+(define (render-axis-clues axis axis-clues [axis-analysis #f]
+                           #:hint-mode [hint-mode default-hint-mode]
+                           #:hint-lines [hint-lines (seteqv)])
   (define line-picts
-    (for/list ([clue-line (in-array axis-clues)]
+    (for/list ([(clue-line clue-i) (in-indexed (in-array axis-clues))]
                [line-analysis (if axis-analysis
                                   (in-array axis-analysis)
                                   (in-cycle '(#f)))])
-      (render-line-clues axis clue-line line-analysis)))
+      (render-line-clues axis clue-line line-analysis
+                         #:hint-mode hint-mode
+                         #:hint? (set-member? hint-lines clue-i))))
   (launder
    (match axis
      ['row    (apply vr-append line-picts)]
@@ -320,52 +385,62 @@
 
     (define pz -pz)
     (define board-analysis -board-analysis)
+    (define hint-mode default-hint-mode)
+    (define hint-rows (seteqv))
+    (define hint-columns (seteqv))
     (define solved-board -solved-board)
     (define cursor-locations (hasheqv))
     (define show-errors? #f)
     (define show-fps? -show-fps?)
     (define picture-only? #f)
 
-    (define/public (set-puzzle! new-pz)
+    (define/public (set-state! #:puzzle [new-pz not-given]
+                               #:board-analysis [new-board-analysis not-given]
+                               #:hint-mode [new-hint-mode not-given]
+                               #:hint-rows [new-hint-rows not-given]
+                               #:hint-columns [new-hint-columns not-given]
+                               #:solved-board [new-solved-board not-given]
+                               #:cursor-locations [new-cursor-locations not-given]
+                               #:show-errors? [new-show-errors? not-given]
+                               #:show-fps? [new-show-fps? not-given]
+                               #:picture-only? [new-picture-only? not-given])
       (call-with-state-lock
        (λ ()
-         (define old-pz pz)
-         (set! pz new-pz)
-         (unless (equal? (puzzle-clues old-pz) (puzzle-clues new-pz))
-           (set! board-analysis #f)
-           (set! solved-board #f)
-           (set! cursor-locations (hasheqv))))))
+         (unless (eq? new-pz not-given)
+           (define old-pz pz)
+           (set! pz new-pz)
+           (unless (equal? (puzzle-clues old-pz) (puzzle-clues new-pz))
+             (set! board-analysis #f)
+             (set! solved-board #f)
+             (set! cursor-locations (hasheqv))))
 
-    (define/public (set-board-analysis! v)
-      (call-with-state-lock
-       (λ () (set! board-analysis v))))
-
-    (define/public (set-solved-board! v)
-      (call-with-state-lock
-       (λ () (set! solved-board v))))
-
-    (define/public (set-cursor-locations! v)
-      (call-with-state-lock
-       (λ () (set! cursor-locations v))))
-
-    (define/public (set-show-errors?! v)
-      (call-with-state-lock
-       (λ () (set! show-errors? (and v #t)))))
-
-    (define/public (set-show-fps?! v)
-      (call-with-state-lock
-       (λ () (set! show-fps? (and v #t)))))
-
-    (define/public (set-picture-only?! v)
-      (call-with-state-lock
-       (λ () (set! picture-only? (and v #t)))))
+         (unless (eq? new-board-analysis not-given)
+           (set! board-analysis new-board-analysis))
+         (unless (eq? new-hint-mode not-given)
+           (set! hint-mode new-hint-mode))
+         (unless (eq? new-hint-rows not-given)
+           (set! hint-rows new-hint-rows))
+         (unless (eq? new-hint-columns not-given)
+           (set! hint-columns new-hint-columns))
+         (unless (eq? new-solved-board not-given)
+           (set! solved-board new-solved-board))
+         (unless (eq? new-cursor-locations not-given)
+           (set! cursor-locations new-cursor-locations))
+         (unless (eq? new-show-errors? not-given)
+           (set! show-errors? (and new-show-errors? #t)))
+         (unless (eq? new-show-fps? not-given)
+           (set! show-fps? (and new-show-fps? #t)))
+         (unless (eq? new-picture-only? not-given)
+           (set! picture-only? (and new-picture-only? #t))))))
 
     ;; The following fields are updated at the start of each frame so that
     ;; concurrent state changes do not interfere with the render thread.
     (define frame-pz pz)
     (define frame-board-analysis board-analysis)
+    (define frame-hint-mode hint-mode)
+    (define frame-hint-rows hint-rows)
+    (define frame-hint-columns hint-columns)
     (define frame-solved-board solved-board)
-    (define frame-show-errors? show-errors?)
     (define frame-show-fps? show-fps?)
     (define frame-board-solved? #f)
 
@@ -415,6 +490,16 @@
         (set! frame-board-analysis board-analysis)
         (set-board-dirty!)
         (set! solved-dirty? #t))
+
+      (unless (eq? frame-hint-mode hint-mode)
+        (set! frame-hint-mode hint-mode)
+        (set-board-dirty!))
+      (unless (equal? frame-hint-rows hint-rows)
+        (set! frame-hint-rows hint-rows)
+        (set-board-dirty!))
+      (unless (equal? frame-hint-columns hint-columns)
+        (set! frame-hint-columns hint-columns)
+        (set-board-dirty!))
 
       (when solved-dirty?
         (update-board-solved?!))
@@ -597,11 +682,15 @@
                (set! row-clues-p
                  (render-axis-clues 'row
                                     (board-clues-row-clues clues)
-                                    (and~> frame-board-analysis board-analysis-row-analysis)))
+                                    (and~> frame-board-analysis board-analysis-row-analysis)
+                                    #:hint-mode frame-hint-mode
+                                    #:hint-lines frame-hint-rows))
                (set! column-clues-p
                  (render-axis-clues 'column
                                     (board-clues-column-clues clues)
-                                    (and~> frame-board-analysis board-analysis-column-analysis)))
+                                    (and~> frame-board-analysis board-analysis-column-analysis)
+                                    #:hint-mode frame-hint-mode
+                                    #:hint-lines frame-hint-columns))
                (set! board-p
                  (~> (cc-superimpose (ghost board-bg-p)
                                      tiles-p
