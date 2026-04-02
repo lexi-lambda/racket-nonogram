@@ -15,9 +15,24 @@
          (maybe-contract-out
           (struct point ([x real?] [y real?]))
           [zero-point integer-point?]
+          [point* (->* [point? real?] [real?] point?)]
+          [point/ (->* [point? real?] [real?] point?)]
+          [point+ (-> point? ... point?)]
           [point- (-> point? point? ... point?)]
+          [point-dot (-> point? point? real?)]
+          [point-cross (-> point? point? real?)]
+          [scalar-projection (-> point? point? real?)]
+          [point-projection (-> point? point? point?)]
+          [point-rejection (-> point? point? point?)]
           [truncate-point (-> point? integer-point?)]
           [floor-point (-> point? integer-point?)]
+          [normalize-point (-> point? point?)]
+          [midpoint (-> point? point? point?)]
+          [distance (case->
+                     (-> point? real?)
+                     (-> point? point? real?))]
+          [point-atan (-> point? real?)]
+          [angle-between (-> point? point? real?)]
           [pict-child-point (->* [pict? pict?] [pict-finder/c] point?)]
 
           (struct size ([width real?] [height real?]))
@@ -77,16 +92,54 @@
 
 (define zero-point (point 0 0))
 
+(define (point* p x-fac [y-fac x-fac])
+  (point (* (point-x p) x-fac)
+         (* (point-y p) y-fac)))
+
+(define (point/ p x-fac [y-fac x-fac])
+  (point (/ (point-x p) x-fac)
+         (/ (point-y p) y-fac)))
+
+(define point+
+  (case-lambda
+    [() zero-point]
+    [(p) p]
+    [(p1 p2)
+     (point (+ (point-x p1) (point-x p2))
+            (+ (point-y p1) (point-y p2)))]
+    [(p . ps)
+     (for/fold ([p1 p]) ([p2 (in-list ps)])
+       (point+ p1 p2))]))
+
 (define point-
   (case-lambda
     [(p)
      (point (- (point-x p))
             (- (point-y p)))]
+    [(p1 p2)
+     (point (- (point-x p1) (point-x p2))
+            (- (point-y p1) (point-y p2)))]
     [(p . ps)
-     (for ([p1 p]
-           [p2 (in-list ps)])
-       (point (- (point-x p1) (point-x p2))
-              (- (point-y p1) (point-y p2))))]))
+     (for/fold ([p1 p]) ([p2 (in-list ps)])
+       (point- p1 p2))]))
+
+(define (point-dot p1 p2)
+  (+ (* (point-x p1) (point-x p2))
+     (* (point-y p1) (point-y p2))))
+
+(define (point-cross p1 p2)
+  (- (* (point-x p1) (point-y p2))
+     (* (point-y p1) (point-x p2))))
+
+(define (scalar-projection p1 p2)
+  (point-dot p1 (normalize-point p2)))
+
+(define (point-projection p1 p2)
+  (define p2* (normalize-point p2))
+  (point* p2* (point-dot p1 p2*)))
+
+(define (point-rejection p1 p2)
+  (point- p1 (point-projection p1 p2)))
 
 (define (integer-point? v)
   (and (point? v)
@@ -100,6 +153,32 @@
 (define (floor-point p)
   (point (inexact->exact (floor (point-x p)))
          (inexact->exact (floor (point-y p)))))
+
+(define (normalize-point p)
+  (point/ p (distance p)))
+
+(define (midpoint p1 p2)
+  (point (/ (+ (point-x p1) (point-x p2)) 2)
+         (/ (+ (point-y p1) (point-y p2)) 2)))
+
+(define distance
+  (case-lambda
+    [(p)
+     (match-define (point x y) p)
+     (sqrt (+ (* x x) (* y y)))]
+    [(p1 p2)
+     (match-define (point x1 y1) p1)
+     (match-define (point x2 y2) p2)
+     (define dx (- x2 x1))
+     (define dy (- y2 y1))
+     (sqrt (+ (* dx dx) (* dy dy)))]))
+
+(define (point-atan p)
+  (atan (point-y p) (point-x p)))
+
+(define (angle-between p1 p2)
+  (acos (/ (point-dot p1 p2)
+           (* (distance p1) (distance p2)))))
 
 (define (pict-child-point parent child [find lt-find])
   (define-values [x y] (find parent child))

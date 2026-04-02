@@ -27,13 +27,7 @@
                                   [column-analysis axis-clue-analysis?]))
           [line-analysis-solved? (-> line-clue-analysis? boolean?)]
           [axis-analysis-solved? (-> axis-clue-analysis? boolean?)]
-          [board-analysis-solved? (-> board-analysis? boolean?)]
-
-          [tile-predicate/c contract?]
-          [tile-empty? tile-predicate/c]
-          [tile-cross? tile-predicate/c]
-          [tile-full? tile-predicate/c]
-          [tile-hole? tile-predicate/c])
+          [board-analysis-solved? (-> board-analysis? boolean?)])
 
          (struct-out exn:contradiction)
          (maybe-contract-out
@@ -218,22 +212,6 @@
    (if (< (array-length row-analysis) (array-length column-analysis))
        row-analysis
        column-analysis)))
-
-;; -----------------------------------------------------------------------------
-
-(define tile-predicate/c (-> tile? boolean?))
-
-(define (tile-empty? tile)
-  (eq? tile 'empty))
-
-(define (tile-cross? tile)
-  (eq? tile 'cross))
-
-(define (tile-full? tile)
-  (eq? tile 'full))
-
-(define (tile-hole? tile)
-  (not (eq? tile 'cross)))
 
 ;; -----------------------------------------------------------------------------
 

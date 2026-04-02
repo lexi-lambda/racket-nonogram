@@ -38,6 +38,12 @@
           [axis-opposite (-> axis? axis?)]
 
           [tile? flat-contract?]
+          [tile-predicate/c contract?]
+          [tile-empty? tile-predicate/c]
+          [tile-cross? tile-predicate/c]
+          [tile-full? tile-predicate/c]
+          [tile-hole? tile-predicate/c]
+
           [mega-line-offset? flat-contract?]
           [tile-line? flat-contract?]
           [mega-tile-line? flat-contract?]
@@ -106,12 +112,27 @@
 ;; -----------------------------------------------------------------------------
 
 (define axis? (or/c 'row 'column))
-(define tile? (or/c 'empty 'full 'cross 'mark))
 
 (define (axis-opposite axis)
   (match axis
     ['row 'column]
     ['column 'row]))
+
+(define tile? (or/c 'empty 'full 'cross 'mark))
+(define tile-predicate/c (-> tile? boolean?))
+
+(define (tile-empty? tile)
+  (or (eq? tile 'empty)
+      (eq? tile 'mark)))
+
+(define (tile-cross? tile)
+  (eq? tile 'cross))
+
+(define (tile-full? tile)
+  (eq? tile 'full))
+
+(define (tile-hole? tile)
+  (not (eq? tile 'cross)))
 
 (define mega-line-offset? (or/c 0 1))
 

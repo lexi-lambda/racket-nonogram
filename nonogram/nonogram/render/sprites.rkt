@@ -20,6 +20,7 @@
 
 (provide (maybe-contract-out
           [blank-tile gl:pict?]
+          [error-overlay-tile gl:pict?]
           [tile (-> tile? gl:pict?)]
 
           [board-background (-> natural? natural? gl:pict?)]
@@ -48,21 +49,72 @@
              dy))
 
 (define (path p
+              #:tight? [tight? #f]
               #:color [color "black"]
               #:pen [pen (make-pen #:style 'transparent)]
               #:brush [brush (make-brush #:color color)])
   (define-values [x y w h] (send p get-bounding-box))
+  (define dx (if tight? (- x) 0))
+  (define dy (if tight? (- y) 0))
   (unsafe-dc
    (λ (dc x y)
      (define old-pen (send dc get-pen))
      (define old-brush (send dc get-brush))
      (send dc set-pen pen)
      (send dc set-brush brush)
-     (send dc draw-path p x y)
+     (send dc draw-path p (+ x dx) (+ y dy))
      (send dc set-brush old-brush)
      (send dc set-pen old-pen))
-   (+ x w)
-   (+ y h)))
+   (if tight? w (+ x w))
+   (if tight? h (+ y h))))
+
+(define (rounded-polygon pts-lst
+                         #:radius radius
+                         #:color [color "black"])
+  (define pts (list->array pts-lst))
+  (define num-pts (array-length pts))
+  (define (get-pt i)
+    (array-ref pts (modulo i num-pts)))
+
+  (define (point-along A B d)
+    (point+ A (point* (normalize-point (point- B A)) d)))
+
+  (define p (new dc-path%))
+  (for ([i (in-range num-pts)])
+    (define A0 (get-pt (sub1 i)))
+    (define B (get-pt i))
+    (define C0 (get-pt (add1 i)))
+
+    (define cross (point-cross (point- B A0) (point- C0 B)))
+    (cond
+      [(zero? cross)
+       (send p line-to (point-x B) (point-y B))]
+      [else
+       (define corner-len (min radius
+                               (/ (distance A0 B) 2)
+                               (/ (distance B C0) 2)))
+       (define A (point-along B A0 corner-len))
+       (define C (point-along B C0 corner-len))
+       (define D (midpoint A C))
+
+       (define BA (point- A B))
+       (define BD (point- D B))
+       (define BE (point* BD (/ (sqr (distance BA))
+                                (point-dot BA BD))))
+       (define E (point+ B BE))
+
+       (define actual-radius (distance (point- E A)))
+       (match-define (point arc-x arc-y)
+         (point- E (point actual-radius actual-radius)))
+       (send p arc
+             arc-x arc-y
+             (* actual-radius 2) (* actual-radius 2)
+             (point-atan (point* (point- A E) 1 -1))
+             (point-atan (point* (point- C E) 1 -1))
+             (negative? cross))]))
+  (send p close)
+
+  (path p #:color color #:tight? #t))
 
 (define (make-bounds-integral p #:align [align cc-superimpose])
   (align (blank (ceiling (pict-width p))
@@ -97,8 +149,8 @@
       (inset TILE-SYMBOL-THICKNESS)
       make-bounds-integral))
 
-(define cross-tile (gl:cc-superimpose blank-tile (gl:sprite sprite:cross)))
-(define mark-tile (gl:cc-superimpose blank-tile (gl:sprite sprite:mark)))
+(define cross-tile (gl:launder (gl:cc-superimpose blank-tile (gl:sprite sprite:cross))))
+(define mark-tile (gl:launder (gl:cc-superimpose blank-tile (gl:sprite sprite:mark))))
 
 (define (tile t)
   (match t
@@ -106,6 +158,52 @@
     ['full  full-tile]
     ['cross cross-tile]
     ['mark  mark-tile]))
+
+(define sprite:error-mark
+  (let ()
+    (define CORNER-RADIUS 1)
+    (define TOP-WIDTH (* TILE-SIZE 0.2))
+    (define BOTTOM-WIDTH (* TILE-SIZE 0.15))
+    (define TOP-HEIGHT (* TILE-SIZE 0.5))
+    (define GAP-HEIGHT 0.8)
+    (define BOTTOM-HEIGHT (* TILE-SIZE 0.15))
+
+    (define BOTTOM-X-OFFSET (/ (- TOP-WIDTH BOTTOM-WIDTH) 2))
+
+    (define p (new dc-path%))
+
+    (send p move-to 0 0)
+    (send p line-to TOP-WIDTH 0)
+    (send p line-to (+ BOTTOM-X-OFFSET BOTTOM-WIDTH) TOP-HEIGHT)
+    (send p line-to BOTTOM-X-OFFSET TOP-HEIGHT)
+    (send p close)
+
+    (send p rectangle
+          BOTTOM-X-OFFSET
+          (+ TOP-HEIGHT GAP-HEIGHT)
+          BOTTOM-WIDTH
+          BOTTOM-HEIGHT)
+
+    (~> (vc-append
+         GAP-HEIGHT
+         (rounded-polygon (list (point 0 0)
+                                (point BOTTOM-X-OFFSET TOP-HEIGHT)
+                                (point (+ BOTTOM-X-OFFSET BOTTOM-WIDTH) TOP-HEIGHT)
+                                (point TOP-WIDTH 0))
+                          #:radius 1
+                          #:color TILE-ERROR-MARK-COLOR)
+         (filled-rounded-rectangle BOTTOM-WIDTH
+                                   BOTTOM-HEIGHT
+                                   1
+                                   #:color TILE-ERROR-MARK-COLOR
+                                   #:draw-border? #f))
+        (inset 1))))
+
+(define error-overlay-tile
+  (gl:launder
+   (gl:cc-superimpose
+    (tile-rectangle TILE-ERROR-OVERLAY-COLOR)
+    (gl:sprite sprite:error-mark))))
 
 ;; -----------------------------------------------------------------------------
 
@@ -354,6 +452,7 @@
 (define all-sprites
   (append (list sprite:cross
                 sprite:mark
+                (make-bounds-integral sprite:error-mark)
                 sprite:minor-grid-tile
                 sprite:border-corner/integral
                 sprite:cursor-mask
@@ -384,12 +483,17 @@
          (point (* (+ x 0.5) TILE-SIZE)
                 (* (+ y 0.5) TILE-SIZE))))
 
+  (~> (gl:ht-append (gl:cc-superimpose full-tile error-overlay-tile)
+                    (gl:cc-superimpose cross-tile error-overlay-tile))
+      (scale 4)
+      (freeze #:scale 2))
+
   (~> (vl-append (text "21" CLUE-FONT)
                  (clue 21 #:color (->rgb CLUE-DONE-COLOR))
-                 (~> (for/list ([i (in-inclusive-range 2 20)])
+                 (~> (for/list ([i (in-inclusive-range 2 10)])
                        (mega-clue 'row i #:color (->rgb CLUE-PENDING-COLOR)))
                      (apply gl:hb-append _ #:gap 1))
-                 (~> (for/list ([i (in-inclusive-range 2 20)])
+                 (~> (for/list ([i (in-inclusive-range 2 10)])
                        (mega-clue 'column i #:color (->rgb CLUE-ERROR-COLOR)))
                      (apply gl:hb-append _ #:gap 1)))
       (scale 2)

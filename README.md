@@ -25,6 +25,7 @@ Alternatively, run `racket -yl- nonogram/main --help` to see the full list of op
 * **Right Click** (or **Ctrl+Left Click**) crosses out the clicked tile.
 * **Middle Click** (or **Alt+Left Click**) marks the clicked tile.
 * Clicking and dragging is supported to fill/cross/mark several tiles at once.
+* **F5** toggles the error overlay, which highlights any incorrectly placed tiles. (This currently only works for puzzles the solver can solve; see below.)
 * **F12** completely clears the current puzzle.
 
 Internally, racket-nonogram includes a line solver to automatically cross off completed clues. The following keybindings can be used to invoke the solver to attempt to actually solve the puzzle (which is obviously cheating, though it can be useful when designing/testing puzzles):

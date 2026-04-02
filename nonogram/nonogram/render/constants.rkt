@@ -41,6 +41,8 @@
 (define TILE-SYMBOL-THICKNESS 2)
 (define TILE-CROSS-COLOR "dark orange")
 (define TILE-MARK-COLOR "dim gray")
+(define TILE-ERROR-MARK-COLOR (hsv* 7 0.90 1.0))
+(define TILE-ERROR-OVERLAY-COLOR (hsv* 17 0.90 1.0 0.4))
 
 (define GRID-MAJOR-INTERVAL 5)
 (define GRID-BORDER-COLOR (make-color* #x484848))
@@ -76,6 +78,14 @@
       (hc-append
        p
        (filled-rectangle 20 20 #:color color #:draw-border? #f))))
+
+  (visualize-colors (array TILE-EMPTY-COLOR-1
+                           TILE-EMPTY-COLOR-2
+                           TILE-FULL-COLOR
+                           TILE-CROSS-COLOR
+                           TILE-MARK-COLOR
+                           TILE-ERROR-MARK-COLOR
+                           TILE-ERROR-OVERLAY-COLOR))
 
   (vl-append
    (visualize-colors CURSOR-COLORS)

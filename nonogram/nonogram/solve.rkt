@@ -40,8 +40,8 @@
           [analyze-puzzle (-> puzzle? board-analysis?)]
           [reanalyze-lines-at (-> puzzle? board-analysis? integer-point? board-analysis?)]
 
-          [solve-puzzle-axis (-> puzzle? axis? (solver-result/c puzzle?))]
-          [solve-puzzle (-> puzzle? (solver-result/c puzzle?))]
+          [solve-puzzle-axis (-> puzzle? axis? (solver-result/c board?))]
+          [solve-puzzle (-> puzzle? (solver-result/c board?))]
 
           [demegaify-puzzle (-> puzzle? puzzle?)]
           [megaify-puzzle (-> puzzle? puzzle?)]))
@@ -103,7 +103,7 @@
 
 ;; -----------------------------------------------------------------------------
 
-;; solve-puzzle-axis : puzzle? axis? -> (solver-result/c puzzle?)
+;; solve-puzzle-axis : puzzle? axis? -> (solver-result/c board?)
 (define (solve-puzzle-axis pz axis)
   (let/ec bail
     (define lcs+ls (puzzle-axis-clues+lines pz axis))
@@ -125,24 +125,26 @@
               (values (list* tile-line-1 tile-line-0 lines)
                       (and solved? line-solved?))])])))
     (solver-result
-     (struct-copy puzzle pz
-       [board (lines->board (list->array (reverse new-lines)) axis)])
+     (lines->board (list->array (reverse new-lines)) axis)
      solved?)))
 
-;; solve-puzzle : puzzle? -> (solver-result/c puzzle?)
+;; solve-puzzle : puzzle? -> (solver-result/c board?)
 (define (solve-puzzle pz)
   (let loop ([old-pz pz])
     (match (solve-puzzle-axis old-pz 'row)
       ['error 'error]
-      [(and result (solver-result new-pz solved?))
+      [(and result (solver-result new-board solved?))
+       (define new-pz (struct-copy puzzle old-pz
+                        [board new-board]))
        (if solved?
            result
            (match (solve-puzzle-axis new-pz 'column)
              ['error 'error]
-             [(and result (solver-result new-pz solved?))
-              (if (or solved? (equal? old-pz new-pz))
+             [(and result (solver-result new-board* solved?))
+              (if (or solved? (equal? new-board new-board*))
                   result
-                  (loop new-pz))]))])))
+                  (loop (struct-copy puzzle new-pz
+                          [board new-board*])))]))])))
 
 (module+ test
   (define-values [solved unsolved contradictions exns]
@@ -192,12 +194,13 @@
     ['error
      (raise-arguments-error who "solving puzzle resulted in contradiction"
                             "puzzle" pz)]
-    [(solver-result solved-pz solved?)
+    [(solver-result solved-board solved?)
      (unless solved?
        (raise-arguments-error who "could not solve puzzle"
-                              "puzzle" solved-pz))
+                              "puzzle" (struct-copy puzzle pz
+                                         [board solved-board])))
      (struct-copy puzzle pz
-       [clues (solved-board->clues (puzzle-board solved-pz))])]))
+       [clues (solved-board->clues solved-board)])]))
 
 ;; megaify-puzzle : puzzle? -> puzzle?
 (define/who (megaify-puzzle pz)
@@ -207,12 +210,12 @@
 
   (match (solve-puzzle pz)
     ['error (fail-contradiction pz)]
-    [(solver-result solved-pz solved?)
+    [(solver-result solved-board solved?)
      (unless solved?
        (raise-arguments-error who "could not solve puzzle"
-                              "puzzle" solved-pz))
+                              "puzzle" (struct-copy puzzle pz
+                                         [board solved-board])))
 
-     (define solved-board (puzzle-board solved-pz))
      (define (build-candidate-lines mega-rows mega-columns)
        (define (overlapping-index? mega-lines i)
          (or (set-member? mega-lines i)

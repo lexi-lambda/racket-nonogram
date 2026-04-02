@@ -34,7 +34,9 @@
             [set-size! (->m exact-positive-integer? exact-positive-integer? void?)]
             [set-puzzle! (->m puzzle? void?)]
             [set-board-analysis! (->m (or/c board-analysis? #f) void?)]
+            [set-solved-board! (->m (or/c board? #f) void?)]
             [set-cursor-locations! (->m (hash/c natural? integer-point? #:immutable #t) void?)]
+            [set-show-errors?! (->m any/c void?)]
             [set-show-fps?! (->m any/c void?)]
             [get-tile-at (->m point? (or/c integer-point? #f))]
             [render! (->m void?)])]))
@@ -52,9 +54,27 @@
                 ([cell (in-array row)])
         (define tile-p
           (if (or (not only-full?)
-                  (eq? cell 'full))
+                  (tile-full? cell))
               (tile cell)
               blank-tile))
+        (ht-append row-p tile-p))))))
+
+;; render-error-tiles : board? board? -> pict?
+(define (render-error-tiles b solved-b)
+  (launder
+   (for/fold ([rows-p (blank)])
+             ([row (in-array (board-rows b))]
+              [solved-row (in-array (board-rows solved-b))])
+     (vl-append
+      rows-p
+      (for/fold ([row-p (blank)])
+                ([cell (in-array row)]
+                 [solved-cell (in-array solved-row)])
+        (define tile-p
+          (if (or (tile-empty? cell)
+                  (equal? cell solved-cell))
+              blank-tile
+              error-overlay-tile))
         (ht-append row-p tile-p))))))
 
 ;; -----------------------------------------------------------------------------
@@ -228,6 +248,7 @@
 ;; -----------------------------------------------------------------------------
 
 (define PICTURE-ONLY-ANIM-SECONDS 0.35)
+(define SHOW-ERRORS-ANIM-SECONDS 0.1)
 
 ;; A transformation that places (0, 0) at the top left of the viewport and
 ;; (1, 1) at the bottom right.
@@ -240,6 +261,7 @@
     (init [{-gl-context gl-context}]
           [{-pz puzzle}]
           [{-board-analysis board-analysis} #f]
+          [{-solved-board solved-board} #f]
           [{-show-fps? show-fps?} #f])
     (super-new)
     (define gl-context -gl-context)
@@ -298,21 +320,37 @@
 
     (define pz -pz)
     (define board-analysis -board-analysis)
+    (define solved-board -solved-board)
     (define cursor-locations (hasheqv))
+    (define show-errors? #f)
     (define show-fps? -show-fps?)
     (define picture-only? #f)
 
-    (define/public (set-puzzle! v)
+    (define/public (set-puzzle! new-pz)
       (call-with-state-lock
-       (λ () (set! pz v))))
+       (λ ()
+         (define old-pz pz)
+         (set! pz new-pz)
+         (unless (equal? (puzzle-clues old-pz) (puzzle-clues new-pz))
+           (set! board-analysis #f)
+           (set! solved-board #f)
+           (set! cursor-locations (hasheqv))))))
 
     (define/public (set-board-analysis! v)
       (call-with-state-lock
        (λ () (set! board-analysis v))))
 
+    (define/public (set-solved-board! v)
+      (call-with-state-lock
+       (λ () (set! solved-board v))))
+
     (define/public (set-cursor-locations! v)
       (call-with-state-lock
        (λ () (set! cursor-locations v))))
+
+    (define/public (set-show-errors?! v)
+      (call-with-state-lock
+       (λ () (set! show-errors? (and v #t)))))
 
     (define/public (set-show-fps?! v)
       (call-with-state-lock
@@ -326,6 +364,8 @@
     ;; concurrent state changes do not interfere with the render thread.
     (define frame-pz pz)
     (define frame-board-analysis board-analysis)
+    (define frame-solved-board solved-board)
+    (define frame-show-errors? show-errors?)
     (define frame-show-fps? show-fps?)
     (define frame-board-solved? #f)
 
@@ -358,7 +398,6 @@
       (cond
         [(not (equal? (puzzle-clues old-pz) (puzzle-clues pz)))
          (set! frame-pz pz)
-         (set! frame-board-analysis #f)
          (build-static-picts!)
          (create-layer-dcs!)
          (set-board-dirty!)
@@ -367,6 +406,10 @@
          (set! frame-pz pz)
          (set-board-dirty!)
          (set! solved-dirty? #t)])
+
+      (unless (equal? frame-solved-board solved-board)
+        (set! frame-solved-board solved-board)
+        (set-board-dirty!))
 
       (unless (equal? frame-board-analysis board-analysis)
         (set! frame-board-analysis board-analysis)
@@ -398,18 +441,31 @@
         (set! frame-show-fps? show-fps?)
         (set! dirty? #t)))
 
-    (define frame-picture-only-fac 0.0)
+    (define show-errors-fac (box 0.0))
+    (define frame-picture-only-fac (box 0.0))
+
+    (define/private (update-linear-animation! value-box
+                                              #:target target-value
+                                              #:duration duration-seconds
+                                              #:elapsed elapsed-secs)
+      (define current-value (unbox value-box))
+      (unless (= current-value target-value)
+        (define advance (/ elapsed-secs duration-seconds))
+        (set-box! value-box
+                  (if (< current-value target-value)
+                      (min target-value (+ current-value advance))
+                      (max target-value (- current-value advance))))
+        (set! dirty? #t)))
 
     (define/private (update-animation-state! elapsed-secs)
-      (define picture-only?* (or picture-only? frame-board-solved?))
-      (define target-picture-only-fac (if picture-only?* 1.0 0.0))
-      (unless (= frame-picture-only-fac target-picture-only-fac)
-        (define advance-fac (/ elapsed-secs PICTURE-ONLY-ANIM-SECONDS))
-        (set! frame-picture-only-fac
-              (if picture-only?*
-                  (min 1.0 (+ frame-picture-only-fac advance-fac))
-                  (max 0.0 (- frame-picture-only-fac advance-fac))))
-        (set! dirty? #t)))
+      (update-linear-animation! show-errors-fac
+                                #:target (if show-errors? 1.0 0.0)
+                                #:duration SHOW-ERRORS-ANIM-SECONDS
+                                #:elapsed elapsed-secs)
+      (update-linear-animation! frame-picture-only-fac
+                                #:target (if (or picture-only? frame-board-solved?) 1.0 0.0)
+                                #:duration PICTURE-ONLY-ANIM-SECONDS
+                                #:elapsed elapsed-secs))
 
     ;; -------------------------------------------------------------------------
     ;; atlas
@@ -441,6 +497,7 @@
     (define clue-underlays-dc #f)
     (define board-bg-dc #f)
     (define board-dc #f)
+    (define board-errors-dc #f)
     (define board-grid-dc #f)
     (define board-border-dc #f)
     (define picture-only-dc #f)
@@ -463,6 +520,7 @@
          (set! board-grid-dc (make-static board-grid-p))
          (set! board-border-dc (make-static board-border-p))
          (set! clue-underlays-dc (make-one #:usage GL_DYNAMIC_DRAW))
+         (set! board-errors-dc (make-one #:usage GL_DYNAMIC_DRAW))
          (set! board-dc (make-one #:usage GL_DYNAMIC_DRAW))
          (set! picture-only-dc (make-one #:usage GL_DYNAMIC_DRAW))
          (set! stream-dc (make-one)))))
@@ -502,6 +560,7 @@
     (define board-p #f)
     (define tiles-p #f)
     (define full-tiles-p #f)
+    (define error-tiles-p #f)
     (define row-clues-p #f)
     (define column-clues-p #f)
 
@@ -532,6 +591,9 @@
              (when board-dirty?
                (set! tiles-p (render-tiles (puzzle-board frame-pz)))
                (set! full-tiles-p (render-tiles (puzzle-board frame-pz) #:only-full? #t))
+               (set! error-tiles-p (if frame-solved-board
+                                       (render-error-tiles (puzzle-board frame-pz) frame-solved-board)
+                                       (ghost tiles-p)))
                (set! row-clues-p
                  (render-axis-clues 'row
                                     (board-clues-row-clues clues)
@@ -579,8 +641,14 @@
                (pack-atlas! #:scale target-atlas-scale)
                (create-layer-dcs!))
 
+             ;; assemble error overlays scene
+             (define board-errors-alpha (unbox show-errors-fac))
+             (define board-errors-scene-p
+               (~> (ghost scene-p)
+                   (pin error-tiles-p (λ~> (lt-find tiles-p)))))
+
              ;; assemble picture-only scene
-             (define picture-only-alpha frame-picture-only-fac)
+             (define picture-only-alpha (unbox frame-picture-only-fac))
              (define picture-only-scene-p
                (~> (ghost scene-p)
                    (pin (lt-superimpose
@@ -631,6 +699,8 @@
              (when board-dirty?
                (gl-dc-clear! board-dc)
                ((pict-draw centered-scene-p) board-dc)
+               (gl-dc-clear! board-errors-dc)
+               ((pict-draw board-errors-scene-p) board-errors-dc)
                (gl-dc-clear! picture-only-dc)
                ((pict-draw picture-only-scene-p) picture-only-dc))
              (when cursors-dirty?
@@ -676,6 +746,11 @@
              (gl-dc-draw board-bg-dc)
              (bind-transform!)
              (gl-dc-draw board-dc)
+             (unless (zero? board-errors-alpha)
+               (bind-transform! scene-p)
+               (gl-dc-program-bind! prog:dc #:alpha board-errors-alpha)
+               (gl-dc-draw board-errors-dc)
+               (gl-dc-program-bind! prog:dc #:alpha 1.0))
              (bind-transform! board-grid-p)
              (gl-dc-draw board-grid-dc)
 
