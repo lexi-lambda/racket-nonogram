@@ -27,11 +27,12 @@
 
 (serializable-struct world
   (puzzle
-   cursor-locations)
+   cursor-locations
+   show-errors?)
   #:transparent)
 
 (define (make-world puzzle)
-  (world puzzle (hasheqv)))
+  (world puzzle (hasheqv) #f))
 
 (define drag-mode? (or/c #f tile? 'unmark))
 
@@ -41,7 +42,6 @@
    board-analysis
    solved-board
    drag-mode
-   show-errors?
    show-fps?)
   #:transparent)
 
@@ -57,25 +57,24 @@
                    (raise-arguments-error who "solving the given puzzle resulted in an error"
                                           "puzzle" (world-puzzle wld))])
                 #f
-                #f
                 show-fps?))
 
 (serializable-struct action () #:transparent)
 (serializable-struct a:set-puzzle action (puzzle) #:transparent)
 (serializable-struct a:set-tile action (location tile) #:transparent)
 (serializable-struct a:move-cursor action (location) #:transparent)
+(serializable-struct a:set-show-errors? action (value) #:transparent)
+
 (struct a:local action (proc) #:transparent)
 
 (define (a:set-drag-mode new-mode)
   (a:local (λ (cs) (struct-copy client-state cs [drag-mode new-mode]))))
-(define (a:set-show-errors? new-show-errors?)
-  (a:local (λ (cs) (struct-copy client-state cs [show-errors? new-show-errors?]))))
 (define (a:set-show-fps? new-show-fps?)
   (a:local (λ (cs) (struct-copy client-state cs [show-fps? new-show-fps?]))))
 
 (define (echo-action? action)
   (match action
-    [(or (? a:set-puzzle?) (? a:set-tile?)) #t]
+    [(or (? a:set-puzzle?) (? a:set-tile?) (? a:set-show-errors?)) #t]
     [(? a:move-cursor?) #f]))
 
 ;; -----------------------------------------------------------------------------
@@ -206,7 +205,7 @@
            [_ old-puzzle]))
        (append
         (when/list (eq? key-code 'f5)
-          (a:set-show-errors? (not (client-state-show-errors? cs))))
+          (a:set-show-errors? (not (world-show-errors? wld))))
         (when/list (eq? key-code 'f8)
           (a:set-show-fps? (not (client-state-show-fps? cs))))
         (unless/list (equal? old-puzzle new-puzzle)
@@ -248,6 +247,11 @@
                      (cond~>
                       [loc  (hash-set client-id loc)]
                       [else (hash-remove client-id)]))])])]
+
+    [(a:set-show-errors? value)
+     (struct-copy client-state cs
+       [world (struct-copy world (client-state-world cs)
+                [show-errors? value])])]
 
     [(a:local proc)
      (proc cs)]))
@@ -460,7 +464,7 @@
          (send puzzle-renderer set-puzzle! (world-puzzle wld))
          (send puzzle-renderer set-board-analysis! (client-state-board-analysis cs))
          (send puzzle-renderer set-solved-board! (client-state-solved-board cs))
-         (send puzzle-renderer set-show-errors?! (client-state-show-errors? cs))
+         (send puzzle-renderer set-show-errors?! (world-show-errors? wld))
          (send puzzle-renderer set-cursor-locations! (world-cursor-locations wld))
          (send puzzle-renderer set-show-fps?! (client-state-show-fps? cs))
          (send puzzle-renderer render!))
