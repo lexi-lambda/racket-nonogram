@@ -28,7 +28,7 @@
           [axis-clue-analysis? flat-contract?]
           (struct board-analysis ([row-analysis axis-clue-analysis?]
                                   [column-analysis axis-clue-analysis?]))
-          [line-analysis-solved? (-> line-clue-analysis? boolean?)]
+          [line-analysis-solved? (-> line-clue-analysis/c boolean?)]
           [axis-analysis-solved? (-> axis-clue-analysis? boolean?)]
           [board-analysis-solved? (-> board-analysis? boolean?)])
 
@@ -207,7 +207,8 @@
   #:transparent)
 
 (define (line-analysis-solved? analysis)
-  (eq? (line-clue-analysis-result analysis) 'done))
+  (and (line-clue-analysis? analysis)
+       (eq? (line-clue-analysis-result analysis) 'done)))
 
 (define (axis-analysis-solved? analysis)
   (for/and ([analysis (in-array analysis)])
