@@ -39,7 +39,7 @@
                                   #:hint-mode hint-mode?
                                   #:hint-rows (set/c natural? #:kind 'immutable)
                                   #:hint-columns (set/c natural? #:kind 'immutable)
-                                  #:solved-board board?
+                                  #:solved-board (or/c board? #f)
                                   #:cursor-locations (hash/c natural? integer-point? #:immutable #t)
                                   #:show-errors? any/c
                                   #:show-fps? any/c
