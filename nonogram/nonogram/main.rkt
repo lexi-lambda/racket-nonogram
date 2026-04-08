@@ -9,6 +9,7 @@
          racket/gui/base
          racket/list
          racket/match
+         racket/math
          racket/path
          racket/port
          racket/random
@@ -385,8 +386,27 @@
       fasl->s-exp
       deserialize))
 
+(define PROTOCOL-VERSION "1.0")
+(define (protocol-version-compatible? v)
+  (string=? v PROTOCOL-VERSION))
+
+(define client-id? natural?)
 (define client-id=? eqv?)
 (struct client-action (client-id action from-server?) #:transparent)
+
+(serializable-struct client-hello (version) #:transparent)
+(serializable-struct server-hello (version client-id world) #:transparent)
+(serializable-struct protocol-error (message) #:transparent)
+
+(define (make-version-mismatch-error client-version)
+  (protocol-error
+   (format "version mismatch\n  client version: ~e\n  server version: ~e"
+           client-version
+           PROTOCOL-VERSION)))
+
+(struct connected-client (id conn send-thread) #:transparent)
+
+;; -----------------------------------------------------------------------------
 
 (define (run initial-world
              #:client [this-client-id 0]
@@ -409,12 +429,43 @@
 
   ;; ---------------------------------------------------------------------------
 
-  (define connected-clients (make-hasheqv))
+  ;; (hash/c ws-conn? connected-client?)
+  (define connected-clients (make-hasheq))
 
   (define (get-next-client-id)
+    (define connected-ids
+      (map connected-client-id (hash-values connected-clients)))
     (for/first ([i (in-naturals 1)]
-                #:unless (member i (hash-values connected-clients) client-id=?))
+                #:unless (member i connected-ids client-id=?))
       i))
+
+  (define (add-connected-client! conn)
+    (define client-id (get-next-client-id))
+    (define send-thread (thread (λ () (client-send-loop conn))))
+    (define client (connected-client client-id conn send-thread))
+    (hash-set! connected-clients conn client)
+    (thread
+     (λ ()
+       (dynamic-wind
+        void
+        (λ () (recv-loop conn #:client client-id))
+        (λ () (enqueue-client-disconnected! conn)))))
+    (define hello (server-hello PROTOCOL-VERSION client-id (client-state-world this-cs)))
+    (connected-client-send! client (serialize-message hello)))
+
+  (define (remove-connected-client! conn)
+    (define client (hash-ref connected-clients conn #f))
+    (when client
+      (hash-remove! connected-clients conn)
+      (enqueue-update! (client-action (connected-client-id client) (a:move-cursor #f) #f))
+      (thread (λ () (ws-close! (connected-client-conn client)))))
+    (void))
+
+  (define (connected-client-send! client msg)
+    (thread-send (connected-client-send-thread client)
+                 msg
+                 (λ () (enqueue-client-disconnected!
+                        (connected-client-conn client)))))
 
   (define (recv-loop conn #:client [client-id #f])
     (let loop ()
@@ -422,14 +473,27 @@
         [(? eof-object?)
          (ws-close! conn)]
         [bs
-         (define msg (deserialize-message bs))
-         (enqueue-update!
-          (if client-id
-              (client-action client-id msg #f)
-              (match msg
-                [(cons client-id msg)
-                 (client-action client-id msg #t)])))
+         (match (deserialize-message bs)
+           [(protocol-error message)
+            (error message)]
+           [msg
+            (enqueue-update!
+             (if client-id
+                 (client-action client-id msg #f)
+                 (match msg
+                   [(cons client-id msg)
+                    (client-action client-id msg #t)])))])
          (loop)])))
+
+  (define (client-send-loop conn)
+    (with-handlers ([exn:fail? (λ (exn)
+                                 (enqueue-client-disconnected! conn)
+                                 (raise exn))])
+      (let loop ()
+        (do-send! conn (thread-receive))
+        (loop))))
+
+  ;; ---------------------------------------------------------------------------
 
   (define (do-send! conn bs)
     (ws-send! conn bs #:payload-type 'binary))
@@ -441,14 +505,9 @@
   (define (broadcast! client-id action)
     (define echo? (echo-action? action))
     (define bs (serialize-message (cons client-id action)))
-    (for ([(conn client-id*) (in-mutable-hash connected-clients)]
-          #:when (or echo? (not (client-id=? client-id client-id*))))
-      (thread
-       (λ ()
-         (with-handlers ([exn:fail? (λ (exn)
-                                      (enqueue-client-disconnected! conn)
-                                      (raise exn))])
-           (do-send! conn bs))))))
+    (for ([client (in-mutable-hash-values connected-clients)]
+          #:when (or echo? (not (client-id=? client-id (connected-client-id client)))))
+      (connected-client-send! client bs)))
 
   ;; ---------------------------------------------------------------------------
 
@@ -474,17 +533,9 @@
              [(cons 'keyboard-event args)
               (enqueue-local-actions! (apply on-keyboard-event this-cs args))]
              [(cons 'client-connected conn)
-              (define client-id (get-next-client-id))
-              (hash-set! connected-clients conn client-id)
-              (do-send! conn (serialize-message (cons client-id (client-state-world this-cs))))
-              (thread
-               (λ ()
-                 (dynamic-wind
-                  void
-                  (λ () (recv-loop conn #:client client-id))
-                  (λ () (enqueue-client-disconnected! conn)))))]
+              (add-connected-client! conn)]
              [(cons 'client-disconnected conn)
-              (hash-remove! connected-clients conn)]))
+              (remove-connected-client! conn)]))
          (loop)))))
 
   (define (enqueue-update! msg)
@@ -502,7 +553,16 @@
         (ws-serve
          #:port listen-port
          (λ (conn req)
-           (enqueue-update! (cons 'client-connected conn))))
+           (match (ws-recv conn)
+             [(? bytes? (app deserialize-message (client-hello client-version)))
+              (cond
+                [(protocol-version-compatible? client-version)
+                 (enqueue-update! (cons 'client-connected conn))]
+                [else
+                 (do-send! conn (serialize-message (make-version-mismatch-error client-version)))
+                 (ws-close! conn)])]
+             [_
+              (ws-close! conn)])))
         void))
 
   ;; ---------------------------------------------------------------------------
@@ -733,9 +793,15 @@
        (exit 1))
 
      (define conn (ws-connect connect-url))
-     (match-define (cons client-id wld) (deserialize-message (ws-recv conn)))
-     (do-run wld
-             #:client client-id
-             #:upstream conn)])
+     (ws-send! conn (serialize-message (client-hello PROTOCOL-VERSION)) #:payload-type 'binary)
+     (match (ws-recv conn)
+       [(? bytes? bs)
+        (match (deserialize-message bs)
+          [(protocol-error message)
+           (error message)]
+          [(server-hello _ client-id wld)
+           (do-run wld
+                   #:client client-id
+                   #:upstream conn)])])])
 
   (close-log-writer log-writer))
